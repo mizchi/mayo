@@ -1,0 +1,7 @@
+import {
+  "mizchi/mayo",
+}
+
+supported_targets = "js"
+
+pkgtype(kind: "executable")

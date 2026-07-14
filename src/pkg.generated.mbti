@@ -1,0 +1,53 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "mizchi/mayo"
+
+// Values
+pub fn pool_options(String, capacity~ : Int, worker_count? : Int, timeout_ms? : Int) -> PoolOptions
+
+pub fn run_worker(SharedInts, Int, Int, (SharedSlice, Int, Int, Int) -> Unit) -> Unit
+
+pub fn start((SharedSlice, Int, Int, Int) -> Unit) -> Unit
+
+// Errors
+pub suberror PoolError {
+  InvalidArgument(String)
+  WorkerFailed(String)
+  Timeout(String)
+  Closed
+  Busy
+}
+
+// Types and methods
+pub struct Pool {
+  // private fields
+}
+pub fn Pool::capacity(Self) -> Int
+pub fn Pool::close(Self) -> Unit
+pub async fn Pool::create(PoolOptions) -> Self raise PoolError
+pub fn Pool::run(Self, end~ : Int, start? : Int, argument? : Int) -> RunResult raise PoolError
+pub fn Pool::values(Self) -> SharedSlice
+pub fn Pool::worker_count(Self) -> Int
+
+pub struct PoolOptions {
+  // private fields
+}
+
+pub(all) struct RunResult {
+  epoch : Int
+  elapsed_ms : Double
+}
+
+#external
+pub type SharedInts
+
+#external
+pub type SharedSlice
+pub fn SharedSlice::fill(Self, Int) -> Unit
+pub fn SharedSlice::length(Self) -> Int
+pub fn SharedSlice::load(Self, Int) -> Int
+pub fn SharedSlice::store(Self, Int, Int) -> Unit
+
+// Type aliases
+
+// Traits
+

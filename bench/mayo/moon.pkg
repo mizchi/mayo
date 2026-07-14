@@ -1,0 +1,8 @@
+import {
+  "mizchi/mayo" @mayo_lib,
+  "moonbitlang/async",
+}
+
+supported_targets = "js"
+
+pkgtype(kind: "executable")

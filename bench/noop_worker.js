@@ -1,0 +1,1 @@
+globalThis.postMessage({ type: "online" });

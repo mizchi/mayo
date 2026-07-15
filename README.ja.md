@@ -97,6 +97,9 @@ let (first, second) = threads.scope(scope => {
 })
 ```
 
+実行可能なDenoサンプルは [`examples/scope_host`](./examples/scope_host)(`just example-scope`)を参照。
+1つのscope内で2つのcallをspawnし、FIFO順で処理されることを確認する。
+
 `start` / `end` は `SharedSlice` の logical index です。Worker range は重ならないため、data の
 `SharedSlice::load` / `store` は意図的に non-atomic です。Atomics は scheduler の control slot
 だけで使います。
@@ -245,6 +248,7 @@ just check         # format・lint・型検査・native check・test
 just test-web      # Chromium / Firefox / WebKit 統合 test
 just serve-web     # COOP/COEP 付き Web example server
 just example       # MoonBit/JS Deno pool
+just example-scope # ThreadPool::scope structured concurrencyのサンプル
 just example-wasm  # MoonBit/JS host と shared-memory MoonBit/Wasm kernel
 just example-json  # optional JSON compatibility example
 just compare 4     # pthread / mmap process / Rust / Rayon 比較

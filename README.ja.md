@@ -11,14 +11,15 @@ linear-memory backend に対応し、Deno または cross-origin isolated な We
 MoonBit 版 Rayon です。現在の scheduler は non-overlapping な static range を使います。
 
 > [!WARNING]
-> MoonBit heap object、closure、String、通常の Array は共有しません。contract は shared `Int32`
-> region の application 固有 layout を定義します。可変長 data は offset と length で参照します。
+> MoonBit heap object、closure、String、通常の Array は共有しません。`KernelCall` は事前ビルドした
+> kernel のopaque descriptorであり、転送可能なclosureではありません。可変長dataはshared memory内の
+> offsetとlengthで参照します。
 
 ## Data path
 
 ```text
 MoonBit/JS host
-  Pool::values() -> SharedSlice
+  ThreadPool::shared_i32() -> SharedI32
           │
           │ 同じ SharedArrayBuffer / shared WebAssembly.Memory
           ▼
@@ -31,17 +32,15 @@ MoonBit/JS host
 ```
 
 この経路には JSON、UTF-8 変換、`postMessage` payload clone、SAB から Wasm への payload copy が
-ありません。Host と guest は別々にコンパイルし、versioned ASCII `KernelContract` ID で結びます。
+ありません。主要なJavaScript facadeは固定 `mayo.range/v1` ABIを使います。raw custom contractとWasm
+kernelでは、明示的なversioned `KernelContract` handshakeを残しています。
 
-## JavaScript kernel
+## ThreadPool facade
 
-Host と guest で同じ contract ID を定義します。shared layout または kernel semantics を非互換に
-変更したら ID も変更します。
+Worker kernelを事前コンパイルし、組み込みrange ABIへinstallします。
 
 ```moonbit
 // guest.mbt
-let contract = @mayo.kernel_contract("my-app/mix-i32/v1")
-
 fn kernel(values : @mayo.SharedSlice, start : Int, end : Int, rounds : Int) {
   for index = start; index < end; index = index + 1 {
     let mut value = values.load(index)
@@ -53,36 +52,49 @@ fn kernel(values : @mayo.SharedSlice, start : Int, end : Int, rounds : Int) {
 }
 
 fn main {
-  @mayo.serve(contract, kernel)
+  @mayo.start(kernel)
 }
 ```
 
-MoonBit host は事前ビルドした kernel を起動し、shared region を所有します。
+Host側ではcontract文字列やscheduler descriptorを繰り返しません。
 
 ```moonbit
 // host.mbt
 async fn main {
-  let contract = @mayo.kernel_contract("my-app/mix-i32/v1")
-  let pool = @mayo.Pool::create(
-    @mayo.kernel_pool_options(
-      contract,
-      "./guest.js",
-      capacity=1048576,
-      worker_count=4,
-    ),
+  let threads = @mayo.ThreadPool::open(
+    "./guest.js",
+    capacity=1048576,
+    workers=4,
   )
-  defer pool.close()
+  defer threads.close()
 
-  let values = pool.values()
+  let values = threads.shared_i32()
   values.fill(1)
 
-  // Deno の main agent では Atomics.wait で block できる。
-  let result = pool.run(end=values.length(), argument=64)
-
-  // Browser document の main thread では async 版を使う。
-  // let result = pool.run_async(end=values.length(), argument=64)
+  let result = values.par_for(@kernels.mix(rounds=64))
   println("dispatch: \{result.elapsed_ms} ms")
 }
+```
+
+`@kernels.mix` は `KernelCall` を返す名前付きHost
+wrapperです。現在は小さなpackageとして手書きしますが、 将来のkernel registry
+generatorも同じ形を出力します。
+
+```moonbit
+pub fn mix(rounds~ : Int) -> @mayo.KernelCall {
+  @mayo.kernel_call(argument=rounds)
+}
+```
+
+複数callはstructured concurrencyで投入できます。同じPoolのcallはFIFO順に入り、各callは自身のrangeを
+全Workerへ分割します。
+
+```moonbit
+let (first, second) = threads.scope(scope => {
+  let first = scope.spawn(@kernels.mix(rounds=2))
+  let second = scope.spawn(@kernels.mix(rounds=1))
+  (first.join(), second.join())
+})
 ```
 
 `start` / `end` は `SharedSlice` の logical index です。Worker range は重ならないため、data の
@@ -92,6 +104,11 @@ async fn main {
 構造化 data は小さな contract package で POD layout を定義します。たとえば descriptor に
 `(input_offset, input_length, output_offset, output_length)` を置き、配列本体は shared region に
 残します。Mayo はこの layout を serialization で隠しません。
+
+## Raw custom contract
+
+明示的なsemantic/layout handshakeが必要な場合は、`Pool`、`kernel_contract`、
+`kernel_pool_options`、`serve`を引き続き利用できます。これらは`ThreadPool`の下にある互換・実装層です。
 
 ## Wasm kernel
 
@@ -153,11 +170,11 @@ runtime heap を共有することはサポートしません。 実装例は
 
 ## Browser と Deno
 
-| Host runtime | Pool 作成      | Dispatch                        | 必要条件                             |
-| ------------ | -------------- | ------------------------------- | ------------------------------------ |
-| Web document | `Pool::create` | `Pool::run_async`               | cross-origin isolation (COOP + COEP) |
-| Deno         | `Pool::create` | `Pool::run` / `Pool::run_async` | local Worker に `--allow-read`       |
-| Node.js      | 未対応         | —                               | Worker adapter を予定                |
+| Host runtime | Pool作成           | Dispatch           | 必要条件                             |
+| ------------ | ------------------ | ------------------ | ------------------------------------ |
+| Web document | `ThreadPool::open` | `par_for` / `join` | cross-origin isolation (COOP + COEP) |
+| Deno         | `ThreadPool::open` | `par_for` / `join` | local Worker に `--allow-read`       |
+| Node.js      | 未対応             | —                  | Worker adapter を予定                |
 
 Browser では document、Worker、Wasm、その他 subresource に次の header が必要です。
 
@@ -170,7 +187,17 @@ Cross-Origin-Resource-Policy: same-origin
 Playwright suite は Chromium、Firefox、WebKit で JavaScript `SharedArrayBuffer` kernel と Wasm
 shared-memory kernel の両方を検証します。
 
-## 公開 API
+## 主要API
+
+- `ThreadPool::open(worker_url, capacity~, workers?=4, timeout_ms?=30000)`
+- `ThreadPool::shared_i32() -> SharedI32`
+- `SharedI32::par_for(kernel, start?=0, end?=length) -> RunResult`
+- `ThreadPool::scope(body)` / `ThreadScope::spawn(kernel)` / `JoinHandle::join()`
+- 名前付きkernel wrapper用の `kernel_call(argument?=0) -> KernelCall`
+- `ThreadPool::worker_count()` / `capacity()` / `close()`
+- `SharedI32::length()` / `load()` / `store()` / `fill()`
+
+## Raw API
 
 - `kernel_contract(id) -> KernelContract`
 - `kernel_pool_options(contract, worker_url, capacity~, worker_count?=4, timeout_ms?=30000)`
@@ -184,7 +211,7 @@ shared-memory kernel の両方を検証します。
 - `serve(contract, kernel)` — JavaScript Worker
 - `SharedSlice::length()` / `load()` / `store()` / `fill()`
 
-`pool_options` と `start` は built-in `mayo.range/v1` contract を使う shortcut として残しています。
+`ThreadPool`、`pool_options`、`start` はbuilt-in `mayo.range/v1` ABIを使います。
 
 ## Optional JSON compatibility package
 
@@ -199,6 +226,8 @@ JSON Wasm ABI は提供しません。
 ## 現在の制約
 
 - shared data region は現在 `Int32Array` のみ
+- JavaScript Worker artifact 1つにつきrange kernelは現在1つ。multi-kernel
+  registryとdescriptor生成は未実装
 - 1 dispatch は 1 range と追加の `Int` argument を持つ
 - scheduling は static chunk。dynamic grain と work stealing は未実装
 - Wasm kernel は allocation や shared MoonBit heap object を使えない

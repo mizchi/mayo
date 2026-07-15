@@ -171,8 +171,7 @@ async fn run() -> Unit raise @mayo_lib.PoolError {
       worker_count=config.workers,
     )
   } else {
-    @mayo_lib.kernel_pool_options(
-      @mayo_lib.kernel_contract(@wasm_contract.contract_id()),
+    @mayo_lib.pool_options(
       "./mayo_worker.js",
       capacity=memory_elements,
       worker_count=config.workers,

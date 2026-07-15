@@ -27,28 +27,18 @@ async fn main {
   if !browser_is_cross_origin_isolated() {
     abort("Mayo Web requires cross-origin isolation")
   }
-  let pool = @mayo.Pool::create(
-    @mayo.kernel_pool_options(
-      @mayo.kernel_contract(@wasm_contract.contract_id()),
-      "./mayo_worker.js",
-      capacity=17,
-      worker_count=3,
-    ),
+  let threads = @mayo.ThreadPool::open(
+    "./mayo_worker.js",
+    capacity=17,
+    workers=3,
   )
-  defer pool.close()
-  let values = pool.values()
+  defer threads.close()
+  let values = threads.shared_i32()
   for index = 0; index < values.length(); index = index + 1 {
     values.store(index, index)
   }
-  let mut sync_run_failed = false
-  ignore(pool.run(end=0)) catch {
-    _ => sync_run_failed = true
-  }
-  if !sync_run_failed {
-    abort("synchronous run was accepted on a browser main thread")
-  }
-  let first = pool.run_async(start=2, end=15, argument=2)
-  let second = pool.run_async(end=17, argument=1)
+  let first = values.par_for(@kernel.mix(rounds=2), start=2, end=15)
+  let second = values.par_for(@kernel.mix(rounds=1))
   if first.epoch != 1 || second.epoch != 2 {
     abort("unexpected Mayo epoch")
   }
@@ -58,15 +48,15 @@ async fn main {
       abort("Mayo Web transform mismatch at index \{index}")
     }
   }
-  let (queued_first, queued_second) = @async.with_task_group(group => {
-    let first_task = group.spawn(() => pool.run_async(end=0))
-    let second_task = group.spawn(() => pool.run_async(end=0))
-    (first_task.wait(), second_task.wait())
+  let (queued_first, queued_second) = threads.scope(scope => {
+    let first_task = scope.spawn(@kernel.noop(), end=0)
+    let second_task = scope.spawn(@kernel.noop(), end=0)
+    (first_task.join(), second_task.join())
   })
   if queued_first.epoch != 3 || queued_second.epoch != 4 {
     abort("concurrent Web dispatches were not queued in FIFO order")
   }
-  pool.close()
+  threads.close()
   show_browser_result(
     "running", "JS range pool passed; starting shared Wasm kernel",
   )

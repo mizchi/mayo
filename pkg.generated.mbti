@@ -2,6 +2,8 @@
 package "mizchi/mayo"
 
 // Values
+pub fn kernel_call(argument? : Int) -> KernelCall
+
 pub fn kernel_contract(String) -> KernelContract
 
 pub fn kernel_pool_options(KernelContract, String, capacity~ : Int, worker_count? : Int, timeout_ms? : Int) -> PoolOptions
@@ -26,6 +28,15 @@ pub suberror PoolError {
 }
 
 // Types and methods
+pub struct JoinHandle {
+  // private fields
+}
+pub async fn JoinHandle::join(Self) -> RunResult raise PoolError
+
+pub struct KernelCall {
+  // private fields
+}
+
 pub struct KernelContract {
   // private fields
 }
@@ -51,6 +62,16 @@ pub(all) struct RunResult {
   elapsed_ms : Double
 }
 
+pub struct SharedI32 {
+  // private fields
+}
+pub fn SharedI32::byte_length(Self) -> Int
+pub fn SharedI32::fill(Self, Int) -> Unit
+pub fn SharedI32::length(Self) -> Int
+pub fn SharedI32::load(Self, Int) -> Int
+pub async fn SharedI32::par_for(Self, KernelCall, start? : Int, end? : Int) -> RunResult raise PoolError
+pub fn SharedI32::store(Self, Int, Int) -> Unit
+
 #external
 pub type SharedInts
 
@@ -61,6 +82,22 @@ pub fn SharedSlice::fill(Self, Int) -> Unit
 pub fn SharedSlice::length(Self) -> Int
 pub fn SharedSlice::load(Self, Int) -> Int
 pub fn SharedSlice::store(Self, Int, Int) -> Unit
+
+pub struct ThreadPool {
+  // private fields
+}
+pub fn ThreadPool::capacity(Self) -> Int
+pub fn ThreadPool::close(Self) -> Unit
+pub async fn ThreadPool::open(String, capacity~ : Int, workers? : Int, timeout_ms? : Int) -> Self raise PoolError
+pub async fn ThreadPool::par_for(Self, KernelCall, start? : Int, end? : Int) -> RunResult raise PoolError
+pub async fn[X] ThreadPool::scope(Self, async (ThreadScope[X]) -> X) -> X raise PoolError
+pub fn ThreadPool::shared_i32(Self) -> SharedI32
+pub fn ThreadPool::worker_count(Self) -> Int
+
+pub struct ThreadScope[X] {
+  // private fields
+}
+pub fn[X] ThreadScope::spawn(Self[X], KernelCall, start? : Int, end? : Int) -> JoinHandle
 
 // Type aliases
 

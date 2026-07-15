@@ -3,5 +3,3 @@ import {
 }
 
 supported_targets = "js"
-
-pkgtype(kind: "executable")

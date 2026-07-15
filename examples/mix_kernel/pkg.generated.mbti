@@ -1,0 +1,19 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "mizchi/mayo/examples/mix_kernel"
+
+import {
+  "mizchi/mayo",
+}
+
+// Values
+pub fn mix(rounds~ : Int) -> @mayo.KernelCall
+
+pub fn noop() -> @mayo.KernelCall
+
+// Errors
+
+// Types and methods
+
+// Type aliases
+
+// Traits

@@ -1,17 +1,14 @@
 ///|
 async fn main {
-  let pool = @mayo.Pool::create(
-    @mayo.kernel_pool_options(
-      @mayo.kernel_contract(@contract.contract_id()),
-      "./mayo_worker.js",
-      capacity=1048576,
-      worker_count=4,
-    ),
+  let threads = @mayo.ThreadPool::open(
+    "./mayo_worker.js",
+    capacity=1048576,
+    workers=4,
   )
-  defer pool.close()
-  let values = pool.values()
+  defer threads.close()
+  let values = threads.shared_i32()
   values.fill(1)
-  let result = pool.run(end=values.length(), argument=64)
+  let result = values.par_for(@kernel.mix(rounds=64))
   println(
     "MoonBit host dispatched epoch \{result.epoch} in \{result.elapsed_ms} ms",
   )

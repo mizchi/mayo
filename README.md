@@ -11,15 +11,15 @@ memory; each dispatch publishes only the POD descriptor `(start, end, argument)`
 is a Rayon-like MoonBit API. Scheduling currently uses static, non-overlapping ranges.
 
 > [!WARNING]
-> Mayo does not share MoonBit heap objects, closures, strings, or ordinary arrays. A contract
-> defines the application-specific layout of the shared `Int32` region. Use offsets and lengths as
-> descriptors for variable-size data.
+> Mayo does not share MoonBit heap objects, closures, strings, or ordinary arrays. `KernelCall` is
+> an opaque descriptor for an ahead-of-time kernel, not a transferable closure. Use offsets and
+> lengths inside shared memory for variable-size data.
 
 ## Data path
 
 ```text
 MoonBit/JS host
-  Pool::values() -> SharedSlice
+  ThreadPool::shared_i32() -> SharedI32
           │
           │ same SharedArrayBuffer / shared WebAssembly.Memory
           ▼
@@ -32,18 +32,15 @@ MoonBit/JS host
 ```
 
 There is no JSON, UTF-8 conversion, `postMessage` payload clone, or SAB-to-Wasm payload copy in this
-path. Host and guest bundles are compiled separately and bound by a versioned ASCII `KernelContract`
-ID.
+path. The primary JavaScript facade uses the fixed `mayo.range/v1` ABI. Raw custom contracts and
+Wasm kernels retain an explicit versioned `KernelContract` handshake.
 
-## JavaScript kernel
+## ThreadPool facade
 
-Define the same contract ID in host and guest code. Change it whenever the shared layout or kernel
-semantics changes incompatibly.
+Compile the Worker kernel ahead of time and install it with the built-in range ABI:
 
 ```moonbit
 // guest.mbt
-let contract = @mayo.kernel_contract("my-app/mix-i32/v1")
-
 fn kernel(values : @mayo.SharedSlice, start : Int, end : Int, rounds : Int) {
   for index = start; index < end; index = index + 1 {
     let mut value = values.load(index)
@@ -55,36 +52,48 @@ fn kernel(values : @mayo.SharedSlice, start : Int, end : Int, rounds : Int) {
 }
 
 fn main {
-  @mayo.serve(contract, kernel)
+  @mayo.start(kernel)
 }
 ```
 
-The MoonBit host starts the prebuilt kernel and owns the shared region:
+The host does not repeat a contract string or scheduler descriptor:
 
 ```moonbit
 // host.mbt
 async fn main {
-  let contract = @mayo.kernel_contract("my-app/mix-i32/v1")
-  let pool = @mayo.Pool::create(
-    @mayo.kernel_pool_options(
-      contract,
-      "./guest.js",
-      capacity=1048576,
-      worker_count=4,
-    ),
+  let threads = @mayo.ThreadPool::open(
+    "./guest.js",
+    capacity=1048576,
+    workers=4,
   )
-  defer pool.close()
+  defer threads.close()
 
-  let values = pool.values()
+  let values = threads.shared_i32()
   values.fill(1)
 
-  // Deno permits blocking Atomics.wait on its main agent.
-  let result = pool.run(end=values.length(), argument=64)
-
-  // Browser document main threads use the asynchronous form.
-  // let result = pool.run_async(end=values.length(), argument=64)
+  let result = values.par_for(@kernels.mix(rounds=64))
   println("dispatch: \{result.elapsed_ms} ms")
 }
+```
+
+`@kernels.mix` is a named host-side wrapper returning `KernelCall`. This is currently a small manual
+package; it is also the intended output shape of a future kernel registry generator:
+
+```moonbit
+pub fn mix(rounds~ : Int) -> @mayo.KernelCall {
+  @mayo.kernel_call(argument=rounds)
+}
+```
+
+Multiple calls can use structured concurrency. Calls on one pool enter in FIFO order; each call
+partitions its own range across every Worker:
+
+```moonbit
+let (first, second) = threads.scope(scope => {
+  let first = scope.spawn(@kernels.mix(rounds=2))
+  let second = scope.spawn(@kernels.mix(rounds=1))
+  (first.join(), second.join())
+})
 ```
 
 `start` and `end` are logical indices into `SharedSlice`. Worker ranges do not overlap, so
@@ -94,6 +103,12 @@ for the scheduler control slots.
 For structured data, define a POD layout in a small contract package. For example, a descriptor may
 store `(input_offset, input_length, output_offset, output_length)` while the arrays themselves
 remain in the shared region. Mayo intentionally does not hide this layout behind serialization.
+
+## Raw custom contracts
+
+`Pool`, `kernel_contract`, `kernel_pool_options`, and `serve` remain available when an application
+needs an explicit semantic/layout handshake. They are the compatibility and implementation layer
+beneath `ThreadPool`.
 
 ## Wasm kernel
 
@@ -155,11 +170,11 @@ instances is not supported. See [`examples/wasm_guest`](./examples/wasm_guest) a
 
 ## Browser and Deno
 
-| Host runtime | Pool creation  | Dispatch                         | Requirement                           |
-| ------------ | -------------- | -------------------------------- | ------------------------------------- |
-| Web document | `Pool::create` | `Pool::run_async`                | Cross-origin isolation (COOP + COEP)  |
-| Deno         | `Pool::create` | `Pool::run` or `Pool::run_async` | `--allow-read` for local Worker files |
-| Node.js      | Not supported  | —                                | Worker adapter is planned             |
+| Host runtime | Pool creation      | Dispatch           | Requirement                           |
+| ------------ | ------------------ | ------------------ | ------------------------------------- |
+| Web document | `ThreadPool::open` | `par_for` / `join` | Cross-origin isolation (COOP + COEP)  |
+| Deno         | `ThreadPool::open` | `par_for` / `join` | `--allow-read` for local Worker files |
+| Node.js      | Not supported      | —                  | Worker adapter is planned             |
 
 Browsers require these headers for the document, Worker, Wasm, and other subresources:
 
@@ -172,7 +187,17 @@ Cross-Origin-Resource-Policy: same-origin
 The Playwright suite verifies both JavaScript `SharedArrayBuffer` kernels and Wasm shared-memory
 kernels in Chromium, Firefox, and WebKit.
 
-## Public API
+## Primary API
+
+- `ThreadPool::open(worker_url, capacity~, workers?=4, timeout_ms?=30000)`
+- `ThreadPool::shared_i32() -> SharedI32`
+- `SharedI32::par_for(kernel, start?=0, end?=length) -> RunResult`
+- `ThreadPool::scope(body)` / `ThreadScope::spawn(kernel)` / `JoinHandle::join()`
+- `kernel_call(argument?=0) -> KernelCall` for named kernel wrapper packages
+- `ThreadPool::worker_count()` / `capacity()` / `close()`
+- `SharedI32::length()` / `load()` / `store()` / `fill()`
+
+## Raw API
 
 - `kernel_contract(id) -> KernelContract`
 - `kernel_pool_options(contract, worker_url, capacity~, worker_count?=4, timeout_ms?=30000)`
@@ -186,7 +211,7 @@ kernels in Chromium, Firefox, and WebKit.
 - `serve(contract, kernel)` for JavaScript Workers
 - `SharedSlice::length()` / `load()` / `store()` / `fill()`
 
-`pool_options` and `start` remain shortcuts using the built-in `mayo.range/v1` contract.
+`ThreadPool`, `pool_options`, and `start` use the built-in `mayo.range/v1` ABI.
 
 ## Optional JSON compatibility package
 
@@ -201,6 +226,8 @@ The package exports `JsonContract`, `json_contract`, `JsonGuest`, `json_guest_op
 ## Current limitations
 
 - The shared data region is currently an `Int32Array`.
+- One JavaScript Worker artifact currently installs one range kernel; multi-kernel registries and
+  generated descriptors are not implemented yet.
 - A dispatch has one range and one additional `Int` argument.
 - Scheduling uses static chunks; dynamic grains and work stealing are not implemented.
 - Wasm kernels must not allocate or use shared MoonBit heap objects.

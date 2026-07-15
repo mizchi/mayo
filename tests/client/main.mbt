@@ -29,45 +29,48 @@ async fn main {
     abort("mismatched JS kernel contract was accepted")
   }
   let mut invalid_options_failed = false
-  ignore(
-    @mayo.Pool::create(
-      @mayo.kernel_pool_options(
-        @mayo.kernel_contract(@contract.contract_id()),
-        "./mayo_worker.js",
-        capacity=1,
-        worker_count=0,
-      ),
-    ),
-  ) catch {
+  ignore(@mayo.ThreadPool::open("./mayo_worker.js", capacity=1, workers=0)) catch {
     _ => invalid_options_failed = true
   }
   if !invalid_options_failed {
     abort("invalid worker_count was accepted")
   }
-  let pool = @mayo.Pool::create(
-    @mayo.kernel_pool_options(
-      @mayo.kernel_contract(@contract.contract_id()),
-      "./mayo_worker.js",
-      capacity=17,
-      worker_count=3,
-    ),
+  let threads = @mayo.ThreadPool::open(
+    "./mayo_worker.js",
+    capacity=17,
+    workers=3,
   )
-  let values = pool.values()
+  let values = threads.shared_i32()
   for index = 0; index < values.length(); index = index + 1 {
     values.store(index, index)
   }
-  let first = pool.run(start=2, end=15, argument=2)
-  let second = pool.run(start=0, end=17, argument=1)
+  let first = values.par_for(@kernel.mix(rounds=2), start=2, end=15)
+  let second = values.par_for(@kernel.mix(rounds=1))
   let mut invalid_range_failed = false
-  ignore(pool.run(start=-1, end=1)) catch {
+  ignore(values.par_for(@kernel.noop(), start=-1, end=1)) catch {
     _ => invalid_range_failed = true
   }
   if !invalid_range_failed {
     abort("invalid range was accepted")
   }
-  pool.close()
+  let (queued_first, queued_second) = threads.scope(scope => {
+    let first_task = scope.spawn(@kernel.noop(), end=0)
+    let second_task = scope.spawn(@kernel.noop(), end=0)
+    (first_task.join(), second_task.join())
+  })
+  let mut invalid_spawn_failed = false
+  threads.scope(scope => {
+    let invalid_task = scope.spawn(@kernel.noop(), start=-1, end=0)
+    ignore(invalid_task.join()) catch {
+      _ => invalid_spawn_failed = true
+    }
+  })
+  if !invalid_spawn_failed {
+    abort("invalid scoped dispatch was accepted")
+  }
+  threads.close()
   let mut closed_pool_failed = false
-  ignore(pool.run(end=0)) catch {
+  ignore(values.par_for(@kernel.noop(), end=0)) catch {
     _ => closed_pool_failed = true
   }
   if !closed_pool_failed {
@@ -82,21 +85,7 @@ async fn main {
       abort("Mayo transform mismatch at index \{index}")
     }
   }
-  let queued_pool = @mayo.Pool::create(
-    @mayo.kernel_pool_options(
-      @mayo.kernel_contract(@contract.contract_id()),
-      "./mayo_worker.js",
-      capacity=0,
-      worker_count=1,
-    ),
-  )
-  let (queued_first, queued_second) = @async.with_task_group(group => {
-    let first_task = group.spawn(() => queued_pool.run_async(end=0))
-    let second_task = group.spawn(() => queued_pool.run_async(end=0))
-    (first_task.wait(), second_task.wait())
-  })
-  queued_pool.close()
-  if queued_first.epoch != 1 || queued_second.epoch != 2 {
+  if queued_first.epoch != 3 || queued_second.epoch != 4 {
     abort("concurrent async dispatches were not queued in FIFO order")
   }
   println("MoonBit Mayo client: ok")

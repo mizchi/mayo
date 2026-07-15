@@ -21,8 +21,30 @@ const CONTROL_ARGUMENT : Int = 4
 const CONTROL_STOP : Int = 5
 
 ///|
+const CONTROL_KERNEL_ID : Int = 6
+
+///|
+const CONTROL_LAYOUT_HASH : Int = 7
+
+///|
+const CONTROL_STATUS : Int = 8
+
+///|
 /// Contract advertised by the low-level range Worker API.
 const RANGE_PROTOCOL_ID : String = "mayo.range/v1"
+
+///|
+/// Prefix for manifest-bound multi-kernel Worker artifacts.
+const KERNEL_PROTOCOL_PREFIX : String = "mayo.kernel/v1"
+
+///|
+const KERNEL_STATUS_OK : Int = 0
+
+///|
+const KERNEL_STATUS_UNKNOWN : Int = -1
+
+///|
+const KERNEL_STATUS_LAYOUT_MISMATCH : Int = -2
 
 ///|
 /// Shared Wasm scheduler/data begins above MoonBit's static runtime image.

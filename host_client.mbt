@@ -113,6 +113,7 @@ pub struct Pool {
   priv workers : Array[HostWorker]
   priv control : SharedInts
   priv values_ : SharedSlice
+  priv protocol_id_ : String
   priv permit : @async.Semaphore
   priv timeout_ms : Int
   priv mut epoch : Int
@@ -301,6 +302,7 @@ pub async fn Pool::create(options : PoolOptions) -> Pool raise PoolError {
     workers,
     control: shared.control,
     values_: shared.values,
+    protocol_id_: options.protocol_id,
     permit: @async.Semaphore(1),
     timeout_ms: options.timeout_ms,
     epoch: 0,
@@ -333,6 +335,8 @@ fn Pool::start_run(
   end~ : Int,
   start? : Int = 0,
   argument? : Int = 0,
+  kernel_id? : Int = 0,
+  layout_hash? : Int = 0,
 ) -> PendingRun raise PoolError {
   if self.closed {
     raise PoolError::Closed
@@ -352,6 +356,9 @@ fn Pool::start_run(
     atomic_store(self.control, base + CONTROL_RANGE_START, range.start)
     atomic_store(self.control, base + CONTROL_RANGE_END, range.end)
     atomic_store(self.control, base + CONTROL_ARGUMENT, argument)
+    atomic_store(self.control, base + CONTROL_KERNEL_ID, kernel_id)
+    atomic_store(self.control, base + CONTROL_LAYOUT_HASH, layout_hash)
+    atomic_store(self.control, base + CONTROL_STATUS, KERNEL_STATUS_OK)
     atomic_store(self.control, base + CONTROL_STOP, 0)
     atomic_store(self.control, base + CONTROL_EPOCH, epoch)
     atomic_notify_one(self.control, base + CONTROL_EPOCH)

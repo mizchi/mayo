@@ -32,12 +32,34 @@ MoonBit/JS host
 ```
 
 この経路には JSON、UTF-8 変換、`postMessage` payload clone、SAB から Wasm への payload copy が
-ありません。主要なJavaScript facadeは固定 `mayo.range/v1` ABIを使います。raw custom contractとWasm
-kernelでは、明示的なversioned `KernelContract` handshakeを残しています。
+ありません。主要なJavaScript facadeはmanifest-boundな `mayo.kernel/v1` ABIを使います。raw custom
+contractとWasm kernelでは、明示的なversioned `KernelContract` handshakeを残しています。
 
 ## ThreadPool facade
 
-Worker kernelを事前コンパイルし、組み込みrange ABIへinstallします。
+HostとGuestの両方がimportするdescriptor packageでmanifestを一度だけ定義します。
+
+```moonbit
+fn mix_spec() -> @mayo.KernelSpec {
+  @mayo.kernel_spec(id=1, layout_hash=0x4D495801)
+}
+
+pub fn manifest() -> @mayo.KernelManifest {
+  @mayo.kernel_manifest("my-app/i32-kernels/v1", [mix_spec()])
+}
+
+pub fn mix(rounds~ : Int) -> @mayo.KernelCall {
+  @mayo.kernel_call(manifest(), mix_spec(), argument=rounds)
+}
+
+pub fn mix_entry(
+  implementation : (@mayo.SharedSlice, Int, Int, Int) -> Unit,
+) -> @mayo.KernelEntry {
+  @mayo.kernel_entry(mix_spec(), implementation)
+}
+```
+
+Worker実装を事前コンパイルし、生成entryへbindします。
 
 ```moonbit
 // guest.mbt
@@ -52,7 +74,10 @@ fn kernel(values : @mayo.SharedSlice, start : Int, end : Int, rounds : Int) {
 }
 
 fn main {
-  @mayo.start(kernel)
+  @mayo.serve_kernels(
+    @kernels.manifest(),
+    [@kernels.mix_entry(kernel)],
+  )
 }
 ```
 
@@ -62,6 +87,7 @@ Host側ではcontract文字列やscheduler descriptorを繰り返しません。
 // host.mbt
 async fn main {
   let threads = @mayo.ThreadPool::open(
+    @kernels.manifest(),
     "./guest.js",
     capacity=1048576,
     workers=4,
@@ -76,15 +102,9 @@ async fn main {
 }
 ```
 
-`@kernels.mix` は `KernelCall` を返す名前付きHost
-wrapperです。現在は小さなpackageとして手書きしますが、 将来のkernel registry
-generatorも同じ形を出力します。
-
-```moonbit
-pub fn mix(rounds~ : Int) -> @mayo.KernelCall {
-  @mayo.kernel_call(argument=rounds)
-}
-```
+`@kernels.mix` はmanifest-boundな `KernelCall` を返す名前付きHost wrapperです。現在は小さなpackageを
+手書きしますが、将来のdescriptor generatorも同じ形を出力します。1つのWorker artifactに複数の kernel
+entryを登録できます。
 
 複数callはstructured concurrencyで投入できます。同じPoolのcallはFIFO順に入り、各callは自身のrangeを
 全Workerへ分割します。
@@ -105,10 +125,52 @@ let (first, second) = threads.scope(scope => {
 `(input_offset, input_length, output_offset, output_length)` を置き、配列本体は shared region に
 残します。Mayo はこの layout を serialization で隠しません。
 
+## リアルワールド例: image pipeline
+
+image exampleは640x360のpacked RGB frameに、integer grayscale変換とthreshold付きSobel edge
+detectionという2つの事前ビルドkernelを適用します。shared layoutは明示的です。
+
+| Region  |      Int32 words | 用途                                   |
+| ------- | ---------------: | -------------------------------------- |
+| Header  |                8 | magic、画像サイズ、offset、pixel count |
+| Source  | `width * height` | 入力RGB、その後のSobel最終結果         |
+| Scratch | `width * height` | grayscale中間結果                      |
+
+最初のdispatchが `source -> scratch` を書き、`par_for`
+の完了が次のdispatchに対するbarrierになります。 2つ目は `scratch -> source`
+を書きます。frameも中間結果もWorker mailboxを通りません。
+
+```moonbit
+let layout = @image.image_layout(width=640, height=360)
+let threads = @mayo.ThreadPool::open(
+  @image.manifest(),
+  "./image_worker.js",
+  capacity=layout.capacity(),
+  workers=3,
+)
+let values = threads.shared_i32()
+layout.initialize(values, source_pixels)
+
+ignore(values.par_for(@image.grayscale(), end=layout.pixel_count()))
+ignore(values.par_for(
+  @image.detect_edges(threshold=64),
+  end=layout.pixel_count(),
+))
+```
+
+完全なコードは共有contractの
+[`image_pipeline`](./examples/image_pipeline/pipeline.mbt)、事前ビルドする
+[`image_worker`](./examples/image_worker/main.mbt)、MoonBit製
+[`image_host`](./examples/image_host/main.mbt) に分離しています。`just example-image`
+で実行できます。
+
 ## Raw custom contract
 
 明示的なsemantic/layout handshakeが必要な場合は、`Pool`、`kernel_contract`、
 `kernel_pool_options`、`serve`を引き続き利用できます。これらは`ThreadPool`の下にある互換・実装層です。
+
+Host/Guest glueのnormativeな規約は [`docs/kernel-abi-v1.ja.md`](./docs/kernel-abi-v1.ja.md)
+にまとめています。
 
 ## Wasm kernel
 
@@ -189,16 +251,21 @@ shared-memory kernel の両方を検証します。
 
 ## 主要API
 
-- `ThreadPool::open(worker_url, capacity~, workers?=4, timeout_ms?=30000)`
+- `kernel_spec(id~, layout_hash~) -> KernelSpec`
+- `kernel_manifest(id, specs) -> KernelManifest`
+- `kernel_call(manifest, spec, argument?=0) -> KernelCall`
+- `kernel_entry(spec, implementation) -> KernelEntry`
+- `serve_kernels(manifest, entries)`
+- `ThreadPool::open(manifest, worker_url, capacity~, workers?=4, timeout_ms?=30000)`
 - `ThreadPool::shared_i32() -> SharedI32`
 - `SharedI32::par_for(kernel, start?=0, end?=length) -> RunResult`
 - `ThreadPool::scope(body)` / `ThreadScope::spawn(kernel)` / `JoinHandle::join()`
-- 名前付きkernel wrapper用の `kernel_call(argument?=0) -> KernelCall`
 - `ThreadPool::worker_count()` / `capacity()` / `close()`
 - `SharedI32::length()` / `load()` / `store()` / `fill()`
 
 ## Raw API
 
+- `kernel_manifest_pool_options(manifest, worker_url, capacity~, worker_count?=4, timeout_ms?=30000)`
 - `kernel_contract(id) -> KernelContract`
 - `kernel_pool_options(contract, worker_url, capacity~, worker_count?=4, timeout_ms?=30000)`
 - `wasm_kernel_pool_options(contract, glue_url, wasm_url, capacity~, worker_count?=4, timeout_ms?=30000)`
@@ -207,11 +274,13 @@ shared-memory kernel の両方を検証します。
 - `Pool::run(start?=0, end~, argument?=0) -> RunResult` — Deno など blocking 可能な runtime
 - `Pool::run_async(start?=0, end~, argument?=0) -> RunResult` — browser document。同じPoolへの
   並行呼び出しはFIFO順に待機
+- `Pool::run_kernel(kernel, start?=0, end~) -> RunResult` — manifest-boundなblocking runtime向け
 - `Pool::worker_count()` / `Pool::capacity()` / `Pool::close()`
 - `serve(contract, kernel)` — JavaScript Worker
 - `SharedSlice::length()` / `load()` / `store()` / `fill()`
 
-`ThreadPool`、`pool_options`、`start` はbuilt-in `mayo.range/v1` ABIを使います。
+`ThreadPool` はmanifest-boundな `mayo.kernel/v1` ABIを使います。`pool_options` と `start` はbuilt-in
+single-kernel `mayo.range/v1` compatibility ABIとして残します。
 
 ## Optional JSON compatibility package
 
@@ -226,8 +295,7 @@ JSON Wasm ABI は提供しません。
 ## 現在の制約
 
 - shared data region は現在 `Int32Array` のみ
-- JavaScript Worker artifact 1つにつきrange kernelは現在1つ。multi-kernel
-  registryとdescriptor生成は未実装
+- descriptor packageは現在手書き。自動生成は未実装
 - 1 dispatch は 1 range と追加の `Int` argument を持つ
 - scheduling は static chunk。dynamic grain と work stealing は未実装
 - Wasm kernel は allocation や shared MoonBit heap object を使えない

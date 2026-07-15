@@ -1,6 +1,7 @@
 import {
   "mizchi/mayo",
-  "mizchi/mayo/examples/mix_kernel" @kernel,
+  "mizchi/mayo/examples/image_pipeline" @image,
+  "moonbitlang/async",
 }
 
 supported_targets = "js"

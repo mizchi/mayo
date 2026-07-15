@@ -1,0 +1,55 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "mizchi/mayo/examples/image_pipeline"
+
+import {
+  "mizchi/mayo",
+}
+
+// Values
+pub fn blue(Int) -> Int
+
+pub fn detect_edges(threshold~ : Int) -> @mayo.KernelCall
+
+pub fn grayscale() -> @mayo.KernelCall
+
+pub fn grayscale_entry((@mayo.SharedSlice, Int, Int, Int) -> Unit) -> @mayo.KernelEntry
+
+pub fn grayscale_pixel(Int) -> Int
+
+pub fn green(Int) -> Int
+
+pub fn image_layout(width~ : Int, height~ : Int) -> ImageLayout
+
+pub fn load_guest_layout(@mayo.SharedSlice) -> ImageLayout
+
+pub fn manifest() -> @mayo.KernelManifest
+
+pub fn pack_rgb(red~ : Int, green~ : Int, blue~ : Int) -> Int
+
+pub fn red(Int) -> Int
+
+pub fn sobel_entry((@mayo.SharedSlice, Int, Int, Int) -> Unit) -> @mayo.KernelEntry
+
+pub fn sobel_pixel(Int, Int, Int, Int, Int, Int, Int, Int, threshold~ : Int) -> Int
+
+// Errors
+
+// Types and methods
+pub struct ImageLayout {
+  // private fields
+}
+pub fn ImageLayout::capacity(Self) -> Int
+pub fn ImageLayout::height(Self) -> Int
+pub fn ImageLayout::initialize(Self, @mayo.SharedI32, Array[Int]) -> Unit
+pub fn ImageLayout::pixel_count(Self) -> Int
+pub fn ImageLayout::scratch_index(Self, Int) -> Int
+pub fn ImageLayout::scratch_offset(Self) -> Int
+pub fn ImageLayout::scratch_pixel(Self, @mayo.SharedI32, Int) -> Int
+pub fn ImageLayout::source_index(Self, Int) -> Int
+pub fn ImageLayout::source_offset(Self) -> Int
+pub fn ImageLayout::source_pixel(Self, @mayo.SharedI32, Int) -> Int
+pub fn ImageLayout::width(Self) -> Int
+
+// Type aliases
+
+// Traits

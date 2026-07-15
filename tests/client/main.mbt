@@ -14,13 +14,13 @@ fn mix_rounds(value : Int, rounds : Int) -> Int {
 async fn main {
   let mut contract_mismatch_failed = false
   ignore(
-    @mayo.Pool::create(
-      @mayo.kernel_pool_options(
-        @mayo.kernel_contract("mayo.example.shared-mix/v2"),
-        "./mayo_worker.js",
-        capacity=1,
-        worker_count=1,
-      ),
+    @mayo.ThreadPool::open(
+      @mayo.kernel_manifest("mayo.example.wrong/v1", [
+        @mayo.kernel_spec(id=1, layout_hash=1),
+      ]),
+      "./mayo_worker.js",
+      capacity=1,
+      workers=1,
     ),
   ) catch {
     _ => contract_mismatch_failed = true
@@ -29,13 +29,21 @@ async fn main {
     abort("mismatched JS kernel contract was accepted")
   }
   let mut invalid_options_failed = false
-  ignore(@mayo.ThreadPool::open("./mayo_worker.js", capacity=1, workers=0)) catch {
+  ignore(
+    @mayo.ThreadPool::open(
+      @kernel.manifest(),
+      "./mayo_worker.js",
+      capacity=1,
+      workers=0,
+    ),
+  ) catch {
     _ => invalid_options_failed = true
   }
   if !invalid_options_failed {
     abort("invalid worker_count was accepted")
   }
   let threads = @mayo.ThreadPool::open(
+    @kernel.manifest(),
     "./mayo_worker.js",
     capacity=17,
     workers=3,
@@ -45,13 +53,25 @@ async fn main {
     values.store(index, index)
   }
   let first = values.par_for(@kernel.mix(rounds=2), start=2, end=15)
-  let second = values.par_for(@kernel.mix(rounds=1))
+  let second = values.par_for(@kernel.add(delta=1))
   let mut invalid_range_failed = false
   ignore(values.par_for(@kernel.noop(), start=-1, end=1)) catch {
     _ => invalid_range_failed = true
   }
   if !invalid_range_failed {
     abort("invalid range was accepted")
+  }
+  let foreign_spec = @mayo.kernel_spec(id=1, layout_hash=1)
+  let foreign_call = @mayo.kernel_call(
+    @mayo.kernel_manifest("mayo.example.foreign/v1", [foreign_spec]),
+    foreign_spec,
+  )
+  let mut foreign_call_failed = false
+  ignore(values.par_for(foreign_call, end=0)) catch {
+    _ => foreign_call_failed = true
+  }
+  if !foreign_call_failed {
+    abort("foreign kernel descriptor was accepted")
   }
   let (queued_first, queued_second) = threads.scope(scope => {
     let first_task = scope.spawn(@kernel.noop(), end=0)
@@ -80,8 +100,12 @@ async fn main {
     abort("unexpected Mayo epoch")
   }
   for index = 0; index < values.length(); index = index + 1 {
-    let rounds = if index >= 2 && index < 15 { 3 } else { 1 }
-    if values.load(index) != mix_rounds(index, rounds) {
+    let expected = if index >= 2 && index < 15 {
+      mix_rounds(index, 2) + 1
+    } else {
+      index + 1
+    }
+    if values.load(index) != expected {
       abort("Mayo transform mismatch at index \{index}")
     }
   }

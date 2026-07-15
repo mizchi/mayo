@@ -2,17 +2,27 @@
 package "mizchi/mayo"
 
 // Values
-pub fn kernel_call(argument? : Int) -> KernelCall
+pub fn kernel_call(KernelManifest, KernelSpec, argument? : Int) -> KernelCall
 
 pub fn kernel_contract(String) -> KernelContract
 
+pub fn kernel_entry(KernelSpec, (SharedSlice, Int, Int, Int) -> Unit) -> KernelEntry
+
+pub fn kernel_manifest(String, Array[KernelSpec]) -> KernelManifest
+
+pub fn kernel_manifest_pool_options(KernelManifest, String, capacity~ : Int, worker_count? : Int, timeout_ms? : Int) -> PoolOptions
+
 pub fn kernel_pool_options(KernelContract, String, capacity~ : Int, worker_count? : Int, timeout_ms? : Int) -> PoolOptions
+
+pub fn kernel_spec(id~ : Int, layout_hash~ : Int) -> KernelSpec
 
 pub fn pool_options(String, capacity~ : Int, worker_count? : Int, timeout_ms? : Int) -> PoolOptions
 
 pub fn run_worker(SharedInts, Int, Int, (SharedSlice, Int, Int, Int) -> Unit) -> Unit
 
 pub fn serve(KernelContract, (SharedSlice, Int, Int, Int) -> Unit) -> Unit
+
+pub fn serve_kernels(KernelManifest, Array[KernelEntry]) -> Unit
 
 pub fn start((SharedSlice, Int, Int, Int) -> Unit) -> Unit
 
@@ -42,6 +52,21 @@ pub struct KernelContract {
 }
 pub fn KernelContract::id(Self) -> String
 
+pub struct KernelEntry {
+  // private fields
+}
+
+pub struct KernelManifest {
+  // private fields
+}
+pub fn KernelManifest::id(Self) -> String
+
+pub struct KernelSpec {
+  // private fields
+}
+pub fn KernelSpec::id(Self) -> Int
+pub fn KernelSpec::layout_hash(Self) -> Int
+
 pub struct Pool {
   // private fields
 }
@@ -50,6 +75,7 @@ pub fn Pool::close(Self) -> Unit
 pub async fn Pool::create(PoolOptions) -> Self raise PoolError
 pub fn Pool::run(Self, end~ : Int, start? : Int, argument? : Int) -> RunResult raise PoolError
 pub async fn Pool::run_async(Self, end~ : Int, start? : Int, argument? : Int) -> RunResult raise PoolError
+pub fn Pool::run_kernel(Self, KernelCall, end~ : Int, start? : Int) -> RunResult raise PoolError
 pub fn Pool::values(Self) -> SharedSlice
 pub fn Pool::worker_count(Self) -> Int
 
@@ -88,7 +114,7 @@ pub struct ThreadPool {
 }
 pub fn ThreadPool::capacity(Self) -> Int
 pub fn ThreadPool::close(Self) -> Unit
-pub async fn ThreadPool::open(String, capacity~ : Int, workers? : Int, timeout_ms? : Int) -> Self raise PoolError
+pub async fn ThreadPool::open(KernelManifest, String, capacity~ : Int, workers? : Int, timeout_ms? : Int) -> Self raise PoolError
 pub async fn ThreadPool::par_for(Self, KernelCall, start? : Int, end? : Int) -> RunResult raise PoolError
 pub async fn[X] ThreadPool::scope(Self, async (ThreadScope[X]) -> X) -> X raise PoolError
 pub fn ThreadPool::shared_i32(Self) -> SharedI32

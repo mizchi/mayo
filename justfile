@@ -14,6 +14,8 @@ build-worker:
     cp _build/js/release/build/examples/sync_guest/sync_guest.js dist/json_guest.js
     cp _build/js/release/build/examples/sync_host/sync_host.js dist/json_host.js
     cp _build/js/release/build/examples/wasm_host/wasm_host.js dist/wasm_host.js
+    cp _build/js/release/build/examples/image_worker/image_worker.js dist/image_worker.js
+    cp _build/js/release/build/examples/image_host/image_host.js dist/image_example.js
     cp _build/js/release/build/bench/mayo/mayo.js dist/mayo_bench.js
     mkdir -p dist/web
     cp _build/js/release/build/examples/web/web.js dist/web/mayo_web.js
@@ -47,6 +49,7 @@ test: build
     deno run --allow-read dist/client_test.js
     deno run --allow-read dist/json_host.js
     deno run --allow-read dist/wasm_host.js
+    deno run --allow-read dist/image_example.js
     cargo test --release --manifest-path native/rust/Cargo.toml
     deno test --allow-read --allow-run tests bench
     pnpm exec playwright test
@@ -59,6 +62,7 @@ check: build
     deno run --allow-read dist/client_test.js
     deno run --allow-read dist/json_host.js
     deno run --allow-read dist/wasm_host.js
+    deno run --allow-read dist/image_example.js
     cargo fmt --manifest-path native/rust/Cargo.toml -- --check
     cargo clippy --release --manifest-path native/rust/Cargo.toml -- -D warnings
     deno fmt --check
@@ -88,6 +92,10 @@ example-json: build-worker
 # MoonBit/JS hostからMoonBit/Wasm guestをDenoで実行する
 example-wasm: build-worker build-wasm
     deno run --allow-read dist/wasm_host.js
+
+# 共有RGB画像をグレースケール化し、Sobel edge detectionを並列実行する
+example-image: build-worker
+    deno run --allow-read dist/image_example.js
 
 # COOP/COEP付きでMoonBit製Webサンプルを配信する
 serve-web: build-worker build-wasm

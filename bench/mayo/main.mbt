@@ -122,14 +122,31 @@ fn measure(
   pool : @mayo_lib.Pool,
   values : @mayo_lib.SharedSlice,
   config : ScenarioConfig,
+  wasm : Bool,
 ) -> ScenarioReport raise @mayo_lib.PoolError {
   initialize(values, config.elements)
   for warmup = 0; warmup < config.warmups; warmup = warmup + 1 {
-    ignore(pool.run(end=config.elements, argument=config.compute_rounds))
+    if wasm {
+      ignore(pool.run(end=config.elements, argument=config.compute_rounds))
+    } else {
+      ignore(
+        pool.run_kernel(
+          @kernel.mix(rounds=config.compute_rounds),
+          end=config.elements,
+        ),
+      )
+    }
   }
   let samples : Array[Double] = []
   for batch = 0; batch < config.batches; batch = batch + 1 {
-    let result = pool.run(end=config.elements, argument=config.compute_rounds)
+    let result = if wasm {
+      pool.run(end=config.elements, argument=config.compute_rounds)
+    } else {
+      pool.run_kernel(
+        @kernel.mix(rounds=config.compute_rounds),
+        end=config.elements,
+      )
+    }
     samples.push(result.elapsed_ms)
   }
   let timing = summarize_samples(samples)
@@ -171,7 +188,8 @@ async fn run() -> Unit raise @mayo_lib.PoolError {
       worker_count=config.workers,
     )
   } else {
-    @mayo_lib.pool_options(
+    @mayo_lib.kernel_manifest_pool_options(
+      @kernel.manifest(),
       "./mayo_worker.js",
       capacity=memory_elements,
       worker_count=config.workers,
@@ -180,44 +198,59 @@ async fn run() -> Unit raise @mayo_lib.PoolError {
   let pool = @mayo_lib.Pool::create(options)
   defer pool.close()
   let values = pool.values()
-  let dispatch = measure(pool, values, {
-    elements: 0,
-    compute_rounds: 0,
-    warmups: 20,
-    batches: if config.quick {
-      100
-    } else {
-      5000
+  let dispatch = measure(
+    pool,
+    values,
+    {
+      elements: 0,
+      compute_rounds: 0,
+      warmups: 20,
+      batches: if config.quick {
+        100
+      } else {
+        5000
+      },
     },
-  })
-  let memory = measure(pool, values, {
-    elements: memory_elements,
-    compute_rounds: 1,
-    warmups: 5,
-    batches: if config.quick {
-      3
-    } else {
-      25
+    config.wasm,
+  )
+  let memory = measure(
+    pool,
+    values,
+    {
+      elements: memory_elements,
+      compute_rounds: 1,
+      warmups: 5,
+      batches: if config.quick {
+        3
+      } else {
+        25
+      },
     },
-  })
-  let compute = measure(pool, values, {
-    elements: if config.quick {
-      16384
-    } else {
-      262144
+    config.wasm,
+  )
+  let compute = measure(
+    pool,
+    values,
+    {
+      elements: if config.quick {
+        16384
+      } else {
+        262144
+      },
+      compute_rounds: if config.quick {
+        16
+      } else {
+        64
+      },
+      warmups: 3,
+      batches: if config.quick {
+        3
+      } else {
+        20
+      },
     },
-    compute_rounds: if config.quick {
-      16
-    } else {
-      64
-    },
-    warmups: 3,
-    batches: if config.quick {
-      3
-    } else {
-      20
-    },
-  })
+    config.wasm,
+  )
   emit_report(
     if config.wasm {
       "mayo-wasm"

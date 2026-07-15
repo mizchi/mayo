@@ -1,6 +1,6 @@
 import {
   "mizchi/mayo",
-  "mizchi/mayo/examples/mix_kernel" @kernel,
+  "mizchi/mayo/examples/image_pipeline" @image,
 }
 
 supported_targets = "js"

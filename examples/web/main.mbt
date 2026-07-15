@@ -28,6 +28,7 @@ async fn main {
     abort("Mayo Web requires cross-origin isolation")
   }
   let threads = @mayo.ThreadPool::open(
+    @kernel.manifest(),
     "./mayo_worker.js",
     capacity=17,
     workers=3,
@@ -38,13 +39,17 @@ async fn main {
     values.store(index, index)
   }
   let first = values.par_for(@kernel.mix(rounds=2), start=2, end=15)
-  let second = values.par_for(@kernel.mix(rounds=1))
+  let second = values.par_for(@kernel.add(delta=1))
   if first.epoch != 1 || second.epoch != 2 {
     abort("unexpected Mayo epoch")
   }
   for index = 0; index < values.length(); index = index + 1 {
-    let rounds = if index >= 2 && index < 15 { 3 } else { 1 }
-    if values.load(index) != mix_rounds(index, rounds) {
+    let expected = if index >= 2 && index < 15 {
+      mix_rounds(index, 2) + 1
+    } else {
+      index + 1
+    }
+    if values.load(index) != expected {
       abort("Mayo Web transform mismatch at index \{index}")
     }
   }

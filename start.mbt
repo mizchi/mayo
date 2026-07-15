@@ -38,3 +38,39 @@ pub fn serve(
     run_worker(shared, slot_base, data_offset, kernel)
   })
 }
+
+///|
+fn validate_kernel_entries(
+  manifest : KernelManifest,
+  entries : Array[KernelEntry],
+) -> Unit {
+  if entries.length() != manifest.kernels_.length() {
+    abort("kernel entries do not match manifest length")
+  }
+  for index = 0; index < entries.length(); index = index + 1 {
+    let expected = manifest.kernels_[index]
+    let actual = entries[index].spec_
+    if actual.id_ != expected.id_ ||
+      actual.layout_hash_ != expected.layout_hash_ {
+      abort("kernel entries do not match manifest order or layout")
+    }
+  }
+}
+
+///|
+/// Installs a manifest-bound, multi-kernel JavaScript Worker entry point.
+/// Host descriptors and Guest entries must be created from the same manifest.
+pub fn serve_kernels(
+  manifest : KernelManifest,
+  entries : Array[KernelEntry],
+) -> Unit {
+  let copied = entries.copy()
+  validate_kernel_entries(manifest, copied)
+  install_atomic_worker(manifest.protocol_id_, fn(
+    shared,
+    slot_base,
+    data_offset,
+  ) {
+    run_kernel_worker(shared, slot_base, data_offset, copied)
+  })
+}

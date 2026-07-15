@@ -61,3 +61,16 @@ test "Wasm kernel options select shared WebAssembly memory" {
 test "Wasm capacity limit reserves runtime and control words" {
   assert_eq(wasm_capacity_limit(4), 7340032 - 64)
 }
+
+///|
+test "kernel manifest protocol binds ordered ids and layout hashes" {
+  let first = kernel_spec(id=1, layout_hash=101)
+  let second = kernel_spec(id=2, layout_hash=202)
+  let manifest = kernel_manifest("app/v1", [first, second])
+  assert_eq(manifest.protocol_id_, "mayo.kernel/v1|6:app/v1|2|1:101|2:202")
+  let call = kernel_call(manifest, second, argument=7)
+  assert_eq(call.protocol_id_, manifest.protocol_id_)
+  assert_eq(call.kernel_id_, 2)
+  assert_eq(call.layout_hash_, 202)
+  assert_eq(call.argument_, 7)
+}

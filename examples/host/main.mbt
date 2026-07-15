@@ -1,6 +1,7 @@
 ///|
 async fn main {
   let threads = @mayo.ThreadPool::open(
+    @kernel.manifest(),
     "./mayo_worker.js",
     capacity=1048576,
     workers=4,

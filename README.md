@@ -32,12 +32,34 @@ MoonBit/JS host
 ```
 
 There is no JSON, UTF-8 conversion, `postMessage` payload clone, or SAB-to-Wasm payload copy in this
-path. The primary JavaScript facade uses the fixed `mayo.range/v1` ABI. Raw custom contracts and
-Wasm kernels retain an explicit versioned `KernelContract` handshake.
+path. The primary JavaScript facade uses a manifest-bound `mayo.kernel/v1` ABI. Raw custom contracts
+and Wasm kernels retain an explicit versioned `KernelContract` handshake.
 
 ## ThreadPool facade
 
-Compile the Worker kernel ahead of time and install it with the built-in range ABI:
+Define the manifest once in a descriptor package imported by both Host and Guest builds:
+
+```moonbit
+fn mix_spec() -> @mayo.KernelSpec {
+  @mayo.kernel_spec(id=1, layout_hash=0x4D495801)
+}
+
+pub fn manifest() -> @mayo.KernelManifest {
+  @mayo.kernel_manifest("my-app/i32-kernels/v1", [mix_spec()])
+}
+
+pub fn mix(rounds~ : Int) -> @mayo.KernelCall {
+  @mayo.kernel_call(manifest(), mix_spec(), argument=rounds)
+}
+
+pub fn mix_entry(
+  implementation : (@mayo.SharedSlice, Int, Int, Int) -> Unit,
+) -> @mayo.KernelEntry {
+  @mayo.kernel_entry(mix_spec(), implementation)
+}
+```
+
+Compile the Worker implementation ahead of time and bind it to the generated entry:
 
 ```moonbit
 // guest.mbt
@@ -52,7 +74,10 @@ fn kernel(values : @mayo.SharedSlice, start : Int, end : Int, rounds : Int) {
 }
 
 fn main {
-  @mayo.start(kernel)
+  @mayo.serve_kernels(
+    @kernels.manifest(),
+    [@kernels.mix_entry(kernel)],
+  )
 }
 ```
 
@@ -62,6 +87,7 @@ The host does not repeat a contract string or scheduler descriptor:
 // host.mbt
 async fn main {
   let threads = @mayo.ThreadPool::open(
+    @kernels.manifest(),
     "./guest.js",
     capacity=1048576,
     workers=4,
@@ -76,14 +102,9 @@ async fn main {
 }
 ```
 
-`@kernels.mix` is a named host-side wrapper returning `KernelCall`. This is currently a small manual
-package; it is also the intended output shape of a future kernel registry generator:
-
-```moonbit
-pub fn mix(rounds~ : Int) -> @mayo.KernelCall {
-  @mayo.kernel_call(argument=rounds)
-}
-```
+`@kernels.mix` is a named Host wrapper returning a manifest-bound `KernelCall`. The package is
+currently small and manual; it is also the intended output shape of a future descriptor generator.
+One Worker artifact can register multiple kernel entries.
 
 Multiple calls can use structured concurrency. Calls on one pool enter in FIFO order; each call
 partitions its own range across every Worker:
@@ -104,11 +125,52 @@ For structured data, define a POD layout in a small contract package. For exampl
 store `(input_offset, input_length, output_offset, output_length)` while the arrays themselves
 remain in the shared region. Mayo intentionally does not hide this layout behind serialization.
 
+## Real-world example: image pipeline
+
+The image example processes a 640x360 packed-RGB frame with two ahead-of-time kernels: integer
+grayscale conversion followed by thresholded Sobel edge detection. Its shared layout is explicit:
+
+| Region  |      Int32 words | Role                                    |
+| ------- | ---------------: | --------------------------------------- |
+| Header  |                8 | Magic, dimensions, offsets, pixel count |
+| Source  | `width * height` | Input RGB, then final Sobel output      |
+| Scratch | `width * height` | Grayscale intermediate                  |
+
+The first dispatch writes `source -> scratch`. Completion of `par_for` is the barrier before the
+second dispatch reads `scratch -> source`; neither the frame nor the intermediate result crosses a
+Worker mailbox.
+
+```moonbit
+let layout = @image.image_layout(width=640, height=360)
+let threads = @mayo.ThreadPool::open(
+  @image.manifest(),
+  "./image_worker.js",
+  capacity=layout.capacity(),
+  workers=3,
+)
+let values = threads.shared_i32()
+layout.initialize(values, source_pixels)
+
+ignore(values.par_for(@image.grayscale(), end=layout.pixel_count()))
+ignore(values.par_for(
+  @image.detect_edges(threshold=64),
+  end=layout.pixel_count(),
+))
+```
+
+The complete code is split into the shared
+[`image_pipeline`](./examples/image_pipeline/pipeline.mbt) contract, the prebuilt
+[`image_worker`](./examples/image_worker/main.mbt), and the MoonBit
+[`image_host`](./examples/image_host/main.mbt). Run it with `just example-image`.
+
 ## Raw custom contracts
 
 `Pool`, `kernel_contract`, `kernel_pool_options`, and `serve` remain available when an application
 needs an explicit semantic/layout handshake. They are the compatibility and implementation layer
 beneath `ThreadPool`.
+
+The normative Host/Guest glue convention is documented in
+[`docs/kernel-abi-v1.md`](./docs/kernel-abi-v1.md).
 
 ## Wasm kernel
 
@@ -189,16 +251,21 @@ kernels in Chromium, Firefox, and WebKit.
 
 ## Primary API
 
-- `ThreadPool::open(worker_url, capacity~, workers?=4, timeout_ms?=30000)`
+- `kernel_spec(id~, layout_hash~) -> KernelSpec`
+- `kernel_manifest(id, specs) -> KernelManifest`
+- `kernel_call(manifest, spec, argument?=0) -> KernelCall`
+- `kernel_entry(spec, implementation) -> KernelEntry`
+- `serve_kernels(manifest, entries)`
+- `ThreadPool::open(manifest, worker_url, capacity~, workers?=4, timeout_ms?=30000)`
 - `ThreadPool::shared_i32() -> SharedI32`
 - `SharedI32::par_for(kernel, start?=0, end?=length) -> RunResult`
 - `ThreadPool::scope(body)` / `ThreadScope::spawn(kernel)` / `JoinHandle::join()`
-- `kernel_call(argument?=0) -> KernelCall` for named kernel wrapper packages
 - `ThreadPool::worker_count()` / `capacity()` / `close()`
 - `SharedI32::length()` / `load()` / `store()` / `fill()`
 
 ## Raw API
 
+- `kernel_manifest_pool_options(manifest, worker_url, capacity~, worker_count?=4, timeout_ms?=30000)`
 - `kernel_contract(id) -> KernelContract`
 - `kernel_pool_options(contract, worker_url, capacity~, worker_count?=4, timeout_ms?=30000)`
 - `wasm_kernel_pool_options(contract, glue_url, wasm_url, capacity~, worker_count?=4, timeout_ms?=30000)`
@@ -207,11 +274,13 @@ kernels in Chromium, Firefox, and WebKit.
 - `Pool::run(start?=0, end~, argument?=0) -> RunResult` for blocking runtimes
 - `Pool::run_async(start?=0, end~, argument?=0) -> RunResult` for browser documents; concurrent
   calls wait for the pool in FIFO order
+- `Pool::run_kernel(kernel, start?=0, end~) -> RunResult` for manifest-bound blocking runtimes
 - `Pool::worker_count()` / `Pool::capacity()` / `Pool::close()`
 - `serve(contract, kernel)` for JavaScript Workers
 - `SharedSlice::length()` / `load()` / `store()` / `fill()`
 
-`ThreadPool`, `pool_options`, and `start` use the built-in `mayo.range/v1` ABI.
+`ThreadPool` uses the manifest-bound `mayo.kernel/v1` ABI. `pool_options` and `start` retain the
+built-in single-kernel `mayo.range/v1` compatibility ABI.
 
 ## Optional JSON compatibility package
 
@@ -226,8 +295,7 @@ The package exports `JsonContract`, `json_contract`, `JsonGuest`, `json_guest_op
 ## Current limitations
 
 - The shared data region is currently an `Int32Array`.
-- One JavaScript Worker artifact currently installs one range kernel; multi-kernel registries and
-  generated descriptors are not implemented yet.
+- Descriptor packages are currently written manually; automatic generation is not implemented yet.
 - A dispatch has one range and one additional `Int` argument.
 - Scheduling uses static chunks; dynamic grains and work stealing are not implemented.
 - Wasm kernels must not allocate or use shared MoonBit heap objects.

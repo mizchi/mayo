@@ -11,6 +11,7 @@ build-worker:
     cp _build/js/release/build/worker/worker.js dist/bench_worker.js
     cp _build/js/release/build/tests/client/client.js dist/client_test.js
     cp _build/js/release/build/examples/host/host.js dist/mayo_example.js
+    cp _build/js/release/build/examples/scope_host/scope_host.js dist/mayo_scope_example.js
     cp _build/js/release/build/examples/sync_guest/sync_guest.js dist/json_guest.js
     cp _build/js/release/build/examples/sync_host/sync_host.js dist/json_host.js
     cp _build/js/release/build/examples/wasm_host/wasm_host.js dist/wasm_host.js
@@ -84,6 +85,10 @@ bench workers="4" iterations="50000" samples="30" rounds="10": build
 # MoonBit製host APIとサンプルkernelを実行する
 example: build-worker
     deno run --allow-read dist/mayo_example.js
+
+# ThreadPool::scopeによる構造化並行性のサンプルを実行する
+example-scope: build-worker
+    deno run --allow-read dist/mayo_scope_example.js
 
 # optional JSON compatibility host/guestをDenoで実行する
 example-json: build-worker

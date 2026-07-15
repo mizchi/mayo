@@ -117,6 +117,9 @@ let (first, second) = threads.scope(scope => {
 })
 ```
 
+See [`examples/scope_host`](./examples/scope_host) for a runnable Deno example (`just example-scope`)
+that spawns two calls in one scope and checks their FIFO dispatch order.
+
 `start` and `end` are logical indices into `SharedSlice`. Worker ranges do not overlap, so
 `SharedSlice::load` and `store` deliberately use non-atomic element access. Atomics are used only
 for the scheduler control slots.
@@ -313,6 +316,7 @@ just check         # formatting, linting, type checks, native checks, and tests
 just test-web      # Chromium / Firefox / WebKit integration
 just serve-web     # COOP/COEP web example server
 just example       # MoonBit/JS Deno pool
+just example-scope # ThreadPool::scope structured concurrency example
 just example-wasm  # MoonBit/JS host and shared-memory MoonBit/Wasm kernel
 just example-json  # optional JSON compatibility example
 just compare 4     # pthread / mmap process / Rust / Rayon comparison

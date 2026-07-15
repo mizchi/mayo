@@ -113,10 +113,10 @@ pub struct Pool {
   priv workers : Array[HostWorker]
   priv control : SharedInts
   priv values_ : SharedSlice
+  priv permit : @async.Semaphore
   priv timeout_ms : Int
   priv mut epoch : Int
   priv mut closed : Bool
-  priv mut busy : Bool
 }
 
 ///|
@@ -301,10 +301,10 @@ pub async fn Pool::create(options : PoolOptions) -> Pool raise PoolError {
     workers,
     control: shared.control,
     values_: shared.values,
+    permit: @async.Semaphore(1),
     timeout_ms: options.timeout_ms,
     epoch: 0,
     closed: false,
-    busy: false,
   }
 }
 
@@ -337,15 +337,11 @@ fn Pool::start_run(
   if self.closed {
     raise PoolError::Closed
   }
-  if self.busy {
-    raise PoolError::Busy
-  }
   if start < 0 || end < start || end > self.capacity() {
     raise PoolError::InvalidArgument(
       "range [\{start}, \{end}) is outside shared values",
     )
   }
-  self.busy = true
   self.epoch = if self.epoch == 2147483647 { 1 } else { self.epoch + 1 }
   let epoch = self.epoch
   let started_at = performance_now()
@@ -379,10 +375,11 @@ pub fn Pool::run(
       "run cannot block a browser main thread; use run_async",
     )
   }
-  let pending = self.start_run(end~, start~, argument~)
-  defer {
-    self.busy = false
+  if !self.permit.try_acquire() {
+    raise PoolError::Busy
   }
+  defer self.permit.release()
+  let pending = self.start_run(end~, start~, argument~)
   for id = 0; id < self.workers.length(); id = id + 1 {
     wait_for_value(
       self.control,
@@ -396,17 +393,19 @@ pub fn Pool::run(
 
 ///|
 /// Runs one statically partitioned batch without blocking the calling agent.
-/// This is the host API for browser document main threads.
+/// Concurrent calls wait for this pool in FIFO order. This is the host API for
+/// browser document main threads.
 pub async fn Pool::run_async(
   self : Pool,
   end~ : Int,
   start? : Int = 0,
   argument? : Int = 0,
 ) -> RunResult raise PoolError {
-  let pending = self.start_run(end~, start~, argument~)
-  defer {
-    self.busy = false
+  self.permit.acquire() catch {
+    error => raise PoolError::WorkerFailed(error.to_string())
   }
+  defer self.permit.release()
+  let pending = self.start_run(end~, start~, argument~)
   for id = 0; id < self.workers.length(); id = id + 1 {
     wait_for_value_async(
       self.control,

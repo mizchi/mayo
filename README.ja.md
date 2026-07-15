@@ -178,7 +178,8 @@ shared-memory kernel の両方を検証します。
 - `Pool::create(options)`
 - `Pool::values() -> SharedSlice`
 - `Pool::run(start?=0, end~, argument?=0) -> RunResult` — Deno など blocking 可能な runtime
-- `Pool::run_async(start?=0, end~, argument?=0) -> RunResult` — browser document
+- `Pool::run_async(start?=0, end~, argument?=0) -> RunResult` — browser document。同じPoolへの
+  並行呼び出しはFIFO順に待機
 - `Pool::worker_count()` / `Pool::capacity()` / `Pool::close()`
 - `serve(contract, kernel)` — JavaScript Worker
 - `SharedSlice::length()` / `load()` / `store()` / `fill()`

@@ -82,5 +82,22 @@ async fn main {
       abort("Mayo transform mismatch at index \{index}")
     }
   }
+  let queued_pool = @mayo.Pool::create(
+    @mayo.kernel_pool_options(
+      @mayo.kernel_contract(@contract.contract_id()),
+      "./mayo_worker.js",
+      capacity=0,
+      worker_count=1,
+    ),
+  )
+  let (queued_first, queued_second) = @async.with_task_group(group => {
+    let first_task = group.spawn(() => queued_pool.run_async(end=0))
+    let second_task = group.spawn(() => queued_pool.run_async(end=0))
+    (first_task.wait(), second_task.wait())
+  })
+  queued_pool.close()
+  if queued_first.epoch != 1 || queued_second.epoch != 2 {
+    abort("concurrent async dispatches were not queued in FIFO order")
+  }
   println("MoonBit Mayo client: ok")
 }

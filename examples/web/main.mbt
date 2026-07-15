@@ -58,6 +58,14 @@ async fn main {
       abort("Mayo Web transform mismatch at index \{index}")
     }
   }
+  let (queued_first, queued_second) = @async.with_task_group(group => {
+    let first_task = group.spawn(() => pool.run_async(end=0))
+    let second_task = group.spawn(() => pool.run_async(end=0))
+    (first_task.wait(), second_task.wait())
+  })
+  if queued_first.epoch != 3 || queued_second.epoch != 4 {
+    abort("concurrent Web dispatches were not queued in FIFO order")
+  }
   pool.close()
   show_browser_result(
     "running", "JS range pool passed; starting shared Wasm kernel",

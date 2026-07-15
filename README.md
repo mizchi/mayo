@@ -180,7 +180,8 @@ kernels in Chromium, Firefox, and WebKit.
 - `Pool::create(options)`
 - `Pool::values() -> SharedSlice`
 - `Pool::run(start?=0, end~, argument?=0) -> RunResult` for blocking runtimes
-- `Pool::run_async(start?=0, end~, argument?=0) -> RunResult` for browser documents
+- `Pool::run_async(start?=0, end~, argument?=0) -> RunResult` for browser documents; concurrent
+  calls wait for the pool in FIFO order
 - `Pool::worker_count()` / `Pool::capacity()` / `Pool::close()`
 - `serve(contract, kernel)` for JavaScript Workers
 - `SharedSlice::length()` / `load()` / `store()` / `fill()`

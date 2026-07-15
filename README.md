@@ -12,9 +12,9 @@ is a Rayon-like MoonBit API; the current scheduler uses static, non-overlapping 
 work stealing.
 
 > [!WARNING]
-> Mayo is experimental. MoonBit heap objects, closures, and ordinary objects are not shared across
-> Workers. The current contract shares one `Int32Array`-backed `SharedSlice` and one `Int` argument
-> per dispatch.
+> Mayo is experimental. MoonBit heap objects, closures, and ordinary objects are not directly shared
+> across Workers. The typed API serializes values into a UTF-8 JSON mailbox in shared memory; the
+> low-level API exposes an `Int32Array`-backed `SharedSlice` for zero-copy numeric data.
 
 ## Runtime support
 
@@ -54,7 +54,82 @@ Only the runtime boundary that touches `Worker`, `SharedArrayBuffer`, Atomics, p
 `performance.now()` is JavaScript FFI. Option validation, range partitioning, lifecycle state, and
 dispatch are implemented in MoonBit.
 
-## Usage
+## Typed host/guest contract
+
+The recommended boundary compiles a host and guest as two separate MoonBit executables. Both import
+a small contract package containing the request type, response type, and a stable versioned ID.
+
+```text
+contract.mbt                    imported at compile time
+  Request / Response                    │
+  "my-app/task/v1"              ┌───────┴───────┐
+                                │               │
+host.mbt -> host.js        guest.mbt -> guest.js
+  SyncGuest::call             serve_sync
+         └──── SharedArrayBuffer JSON mailbox ────┘
+```
+
+Define the shared contract with MoonBit's standard JSON traits:
+
+```moonbit
+pub(all) struct SumRequest {
+  name : String
+  values : Array[Int]
+  scale : Int
+} derive(ToJson, FromJson)
+
+pub(all) struct SumResponse {
+  message : String
+  total : Int
+} derive(ToJson, FromJson)
+
+pub fn contract() -> @mayo.SyncContract[SumRequest, SumResponse] {
+  @mayo.sync_contract("my-app/sum/v1")
+}
+```
+
+Compile the guest with its typed handler:
+
+```moonbit
+fn handle(request : @contract.SumRequest) -> @contract.SumResponse {
+  // Compute a response from the decoded value.
+}
+
+fn main {
+  @mayo.serve_sync(@contract.contract(), handle)
+}
+```
+
+The MoonBit host starts the prebuilt guest and checks its contract ID during the Worker handshake:
+
+```moonbit
+async fn main {
+  let guest = @mayo.SyncGuest::create(
+    @contract.contract(),
+    @mayo.sync_guest_options("./guest.js", mailbox_bytes=65536),
+  )
+  defer guest.close()
+
+  // Deno: blocking Atomics.wait
+  let response = guest.call({ name: "MoonBit", values: [3, 5, 8], scale: 4 })
+
+  // Browser document: use the non-blocking form instead.
+  // let response = guest.call_async(request)
+}
+```
+
+See [`examples/sync_contract`](./examples/sync_contract),
+[`examples/sync_guest`](./examples/sync_guest), and [`examples/sync_host`](./examples/sync_host).
+`just build-worker` produces separate `dist/sync_host.js` and `dist/sync_guest.js` files;
+`deno run --allow-read dist/sync_host.js` runs the end-to-end example.
+
+Any nested MoonBit value implementing `ToJson` and `FromJson` can cross this boundary, including
+derived structs, enums, arrays, maps, strings, and optional values. It is copied into and out of the
+mailbox, not made into a concurrently shared heap object. Requests larger than `mailbox_bytes` raise
+`SyncError::CapacityExceeded`. A mismatched version ID rejects `SyncGuest::create` before dispatch.
+Change the ID whenever the request or response schema changes incompatibly.
+
+## Low-level zero-copy range API
 
 ### 1. Write a MoonBit Worker kernel
 
@@ -128,9 +203,9 @@ just serve-web   # open http://127.0.0.1:4173
 just test-web    # Chromium, Firefox, and WebKit integration
 ```
 
-The Playwright test runs on Chromium, Firefox, and WebKit. It verifies `crossOriginIsolated`, starts
-three prebuilt MoonBit Workers, dispatches two batches through `run_async`, and checks epochs and
-all shared-buffer values.
+The Playwright tests run on Chromium, Firefox, and WebKit. They verify `crossOriginIsolated`, the
+zero-copy range pool, the raw typed protocol, and a MoonBit `SyncGuest::call_async` round trip to a
+separately compiled MoonBit guest.
 
 ### 3. Use Mayo in Deno
 
@@ -168,6 +243,20 @@ pkgtype(kind: "executable")
 
 ## Public API
 
+### Typed host/guest
+
+- `sync_contract[Request, Response](id) -> SyncContract[Request, Response]`
+- `sync_guest_options(worker_url, mailbox_bytes?=1048576, timeout_ms?=30000)`
+- `SyncGuest::create(contract, options)` — starts one persistent guest and checks the contract ID
+- `SyncGuest::call(request) -> Response` — blocking Deno API
+- `SyncGuest::call_async(request) -> Response` — browser-safe API
+- `SyncGuest::mailbox_bytes()` / `SyncGuest::close()`
+- `serve_sync(contract, handler)` — installs the typed guest entry point
+- `SyncError::{InvalidArgument, CapacityExceeded, GuestFailed, Transport, Busy}`
+
+Host requests require `ToJson`; host responses require `FromJson`. The guest applies the inverse
+bounds. These compile-time bounds and the runtime contract ID form the boundary contract.
+
 ### Host
 
 - `pool_options(worker_url, capacity~, worker_count?=4, timeout_ms?=30000)`
@@ -190,7 +279,8 @@ Only one batch may run on a pool at a time. Ranges are validated against the sha
 
 ## Current limitations
 
-- Shared data is limited to an `Int32Array`.
+- The typed API copies JSON/UTF-8; it does not provide zero-copy sharing for MoonBit heap objects.
+- The low-level zero-copy data region is limited to an `Int32Array`.
 - Kernels must be compiled ahead of time as Worker modules.
 - A batch carries one additional `Int` argument.
 - Scheduling uses static chunks; dynamic chunks and work stealing are not implemented.
@@ -211,6 +301,7 @@ just check         # formatting, linting, type checks, native checks, and tests
 just test-web      # Playwright Chromium / Firefox / WebKit integration
 just serve-web     # COOP/COEP web example server
 just example       # Deno host example
+just example-sync  # separately compiled typed Deno host/guest
 just compare 4     # pthread / mmap process / Rust / Rayon comparison
 just bench         # Worker startup and contended-mutex experiments
 ```
@@ -221,6 +312,9 @@ Repository layout:
 host_client.mbt, host_runtime_js.mbt  MoonBit host API and JavaScript boundary
 atomics_js.mbt, mayo.mbt              shared memory and Worker loop
 protocol.mbt, start.mbt               control protocol and Worker entry point
+sync_contract.mbt                     typed contract, mailbox, host, and guest API
+examples/sync_contract/               request/response contract package
+examples/sync_host/, sync_guest/      separately compiled typed executables
 examples/web/                         MoonBit browser client
 examples/host/                        MoonBit Deno client
 examples/mix_worker/                  MoonBit kernel

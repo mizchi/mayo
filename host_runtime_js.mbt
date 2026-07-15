@@ -44,9 +44,10 @@ extern "js" fn create_host_shared(
 ///|
 extern "js" fn start_host_worker(
   worker_url : String,
+  protocol_id : String,
   timeout_ms : Int,
 ) -> @js_async.Promise[HostWorker] =
-  #| (workerUrl, timeoutMs) => new Promise((resolve, reject) => {
+  #| (workerUrl, protocolId, timeoutMs) => new Promise((resolve, reject) => {
   #|   const worker = new Worker(new URL(workerUrl, import.meta.url), { type: "module" });
   #|   const timeout = setTimeout(() => {
   #|     cleanup();
@@ -55,6 +56,14 @@ extern "js" fn start_host_worker(
   #|   }, timeoutMs);
   #|   const onMessage = (event) => {
   #|     if (event.data?.type !== "online") return;
+  #|     if (event.data.protocol !== protocolId) {
+  #|       cleanup();
+  #|       worker.terminate();
+  #|       reject(new Error(
+  #|         `worker contract mismatch: expected ${protocolId}, received ${String(event.data.protocol)}`,
+  #|       ));
+  #|       return;
+  #|     }
   #|     cleanup();
   #|     resolve(worker);
   #|   };

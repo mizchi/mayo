@@ -53,7 +53,20 @@ async fn main {
       abort("Mayo Web transform mismatch at index \{index}")
     }
   }
+  show_browser_result("running", "range pool passed; starting typed guest")
+  let guest = @mayo.SyncGuest::create(
+    @contract.contract(),
+    @mayo.sync_guest_options("./sync_guest.js", mailbox_bytes=65536),
+  )
+  defer guest.close()
+  show_browser_result("running", "typed guest ready; calling contract")
+  let response = guest.call_async({ name: "Web", values: [3, 5, 8], scale: 4 })
+  if response.message != "hello Web" ||
+    response.total != 64 ||
+    response.item_count != 3 {
+    abort("unexpected typed Web guest response")
+  }
   show_browser_result(
-    "passed", "MoonBit Web client passed: 3 Workers, epochs 1 and 2",
+    "passed", "MoonBit Web client passed: range pool and typed struct Sync",
   )
 }

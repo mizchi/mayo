@@ -5,6 +5,7 @@ pub struct PoolOptions {
   priv worker_count : Int
   priv capacity : Int
   priv timeout_ms : Int
+  priv protocol_id : String
 }
 
 ///|
@@ -16,7 +17,13 @@ pub fn pool_options(
   worker_count? : Int = 4,
   timeout_ms? : Int = 30000,
 ) -> PoolOptions {
-  { worker_url, worker_count, capacity, timeout_ms }
+  {
+    worker_url,
+    worker_count,
+    capacity,
+    timeout_ms,
+    protocol_id: RANGE_PROTOCOL_ID,
+  }
 }
 
 ///|
@@ -165,7 +172,11 @@ pub async fn Pool::create(options : PoolOptions) -> Pool raise PoolError {
   let workers : Array[HostWorker] = []
   for id = 0; id < options.worker_count; id = id + 1 {
     ignore(id)
-    let worker = start_host_worker(options.worker_url, options.timeout_ms).wait() catch {
+    let worker = start_host_worker(
+      options.worker_url,
+      options.protocol_id,
+      options.timeout_ms,
+    ).wait() catch {
       error => {
         terminate_workers(workers)
         raise PoolError::WorkerFailed(error.to_string())

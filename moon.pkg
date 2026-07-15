@@ -1,6 +1,7 @@
 // Public mizchi/mayo package for the JavaScript backend.
 import {
   "moonbitlang/async/js_async",
+  "moonbitlang/core/json",
 }
 
 supported_targets = "js"

@@ -11,10 +11,13 @@ build-worker:
     cp _build/js/release/build/worker/worker.js dist/bench_worker.js
     cp _build/js/release/build/tests/client/client.js dist/client_test.js
     cp _build/js/release/build/examples/host/host.js dist/mayo_example.js
+    cp _build/js/release/build/examples/sync_guest/sync_guest.js dist/sync_guest.js
+    cp _build/js/release/build/examples/sync_host/sync_host.js dist/sync_host.js
     cp _build/js/release/build/bench/mayo/mayo.js dist/mayo_bench.js
     mkdir -p dist/web
     cp _build/js/release/build/examples/web/web.js dist/web/mayo_web.js
     cp _build/js/release/build/examples/mix_worker/mix_worker.js dist/web/mayo_worker.js
+    cp _build/js/release/build/examples/sync_guest/sync_guest.js dist/web/sync_guest.js
     cp examples/web/index.html dist/web/index.html
 
 # C と Rust の比較用ベンチマークをビルドする
@@ -31,6 +34,7 @@ build: build-worker build-native
 test: build
     moon test --target js
     deno run --allow-read dist/client_test.js
+    deno run --allow-read dist/sync_host.js
     cargo test --release --manifest-path native/rust/Cargo.toml
     deno test --allow-read --allow-run tests bench
     pnpm exec playwright test
@@ -40,6 +44,7 @@ check: build
     moon check --target js
     moon test --target js
     deno run --allow-read dist/client_test.js
+    deno run --allow-read dist/sync_host.js
     cargo fmt --manifest-path native/rust/Cargo.toml -- --check
     cargo clippy --release --manifest-path native/rust/Cargo.toml -- -D warnings
     deno fmt --check
@@ -61,6 +66,10 @@ bench workers="4" iterations="50000" samples="30" rounds="10": build
 # MoonBit製host APIとサンプルkernelを実行する
 example: build-worker
     deno run --allow-read dist/mayo_example.js
+
+# 別コンパイルした型付きMoonBit host/guestをDenoで実行する
+example-sync: build-worker
+    deno run --allow-read dist/sync_host.js
 
 # COOP/COEP付きでMoonBit製Webサンプルを配信する
 serve-web: build-worker

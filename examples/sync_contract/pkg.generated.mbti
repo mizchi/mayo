@@ -1,0 +1,30 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "mizchi/mayo/examples/sync_contract"
+
+import {
+  "mizchi/mayo",
+  "moonbitlang/core/debug",
+  "moonbitlang/core/json",
+}
+
+// Values
+pub fn contract() -> @mayo.SyncContract[SumRequest, SumResponse]
+
+// Errors
+
+// Types and methods
+pub(all) struct SumRequest {
+  name : String
+  values : Array[Int]
+  scale : Int
+} derive(Eq, ToJson, @debug.Debug, @json.FromJson)
+
+pub(all) struct SumResponse {
+  message : String
+  total : Int
+  item_count : Int
+} derive(Eq, ToJson, @debug.Debug, @json.FromJson)
+
+// Type aliases
+
+// Traits

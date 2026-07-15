@@ -1,7 +1,6 @@
 import {
   "mizchi/mayo",
   "mizchi/mayo/examples/sync_contract" @contract,
-  "moonbitlang/async",
 }
 
 supported_targets = "js"

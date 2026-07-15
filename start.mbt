@@ -1,9 +1,10 @@
 ///|
 #owned(worker_handler)
 extern "js" fn install_atomic_worker(
+  protocol_id : String,
   worker_handler : (SharedInts, Int, Int) -> Unit,
 ) -> Unit =
-  #|(workerHandler) => {
+  #|(protocolId, workerHandler) => {
   #|  globalThis.onmessage = (event) => {
   #|    const message = event.data;
   #|    if (message.type !== "atomic-init") return;
@@ -11,7 +12,7 @@ extern "js" fn install_atomic_worker(
   #|    globalThis.postMessage({ type: "initialized", id: message.id });
   #|    workerHandler(shared, message.slotBase, message.dataOffset);
   #|  };
-  #|  globalThis.postMessage({ type: "online" });
+  #|  globalThis.postMessage({ type: "online", protocol: protocolId });
   #|}
 
 ///|
@@ -20,7 +21,7 @@ extern "js" fn install_atomic_worker(
 /// The host partitions every dispatched range into non-overlapping chunks.
 /// Compile the executable containing this call before creating a host `Pool`.
 pub fn start(kernel : (SharedSlice, Int, Int, Int) -> Unit) -> Unit {
-  install_atomic_worker(fn(shared, slot_base, data_offset) {
+  install_atomic_worker(RANGE_PROTOCOL_ID, fn(shared, slot_base, data_offset) {
     run_worker(shared, slot_base, data_offset, kernel)
   })
 }

@@ -26,6 +26,8 @@ jobs:
       - uses: hustcer/setup-moonbit@9199da0ab63ea0c0bab1dc15f03d76e17ed4f75f # v1.22
         with:
           version: latest
+      - name: Update MoonBit registry
+        run: moon update
       - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
         with:
           deno-version: v2.6.4
@@ -56,6 +58,12 @@ jobs:
       - uses: hustcer/setup-moonbit@9199da0ab63ea0c0bab1dc15f03d76e17ed4f75f # v1.22
         with:
           version: latest
+      - name: Update MoonBit registry
+        run: moon update
+      - name: Install Deno setup dependency
+        run: |
+          apt-get update
+          apt-get install --yes --no-install-recommends unzip
       - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
         with:
           deno-version: v2.6.4

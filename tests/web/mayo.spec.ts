@@ -10,6 +10,6 @@ test("MoonBit host calls range, JS, and Wasm guests in a browser", async ({ page
 
   const status = page.getByTestId("status");
   await expect(status).toHaveAttribute("data-state", "passed");
-  await expect(status).toContainText("range pool, typed JS guest, and typed Wasm guest");
+  await expect(status).toContainText("JS and Wasm zero-copy pools");
   expect(pageErrors).toEqual([]);
 });

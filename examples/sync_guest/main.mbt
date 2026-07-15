@@ -13,5 +13,5 @@ fn handle(request : @contract.SumRequest) -> @contract.SumResponse {
 
 ///|
 fn main {
-  @mayo.serve_sync(@contract.contract(), handle)
+  @mayo_json.serve_json(@contract.contract(), handle)
 }

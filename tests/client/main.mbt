@@ -12,10 +12,31 @@ fn mix_rounds(value : Int, rounds : Int) -> Int {
 
 ///|
 async fn main {
+  let mut contract_mismatch_failed = false
+  ignore(
+    @mayo.Pool::create(
+      @mayo.kernel_pool_options(
+        @mayo.kernel_contract("mayo.example.shared-mix/v2"),
+        "./mayo_worker.js",
+        capacity=1,
+        worker_count=1,
+      ),
+    ),
+  ) catch {
+    _ => contract_mismatch_failed = true
+  }
+  if !contract_mismatch_failed {
+    abort("mismatched JS kernel contract was accepted")
+  }
   let mut invalid_options_failed = false
   ignore(
     @mayo.Pool::create(
-      @mayo.pool_options("./mayo_worker.js", capacity=1, worker_count=0),
+      @mayo.kernel_pool_options(
+        @mayo.kernel_contract(@contract.contract_id()),
+        "./mayo_worker.js",
+        capacity=1,
+        worker_count=0,
+      ),
     ),
   ) catch {
     _ => invalid_options_failed = true
@@ -24,7 +45,12 @@ async fn main {
     abort("invalid worker_count was accepted")
   }
   let pool = @mayo.Pool::create(
-    @mayo.pool_options("./mayo_worker.js", capacity=17, worker_count=3),
+    @mayo.kernel_pool_options(
+      @mayo.kernel_contract(@contract.contract_id()),
+      "./mayo_worker.js",
+      capacity=17,
+      worker_count=3,
+    ),
   )
   let values = pool.values()
   for index = 0; index < values.length(); index = index + 1 {

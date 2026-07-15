@@ -1,13 +1,16 @@
 ///|
-fn handle(request : @contract.WasmSumRequest) -> @contract.WasmSumResponse {
-  let mut total = 0
-  for value in request.values {
-    total = total + value * request.scale
-  }
-  {
-    message: "hello \{request.name} from Wasm",
-    total,
-    item_count: request.values.length(),
+fn mix(value : Int) -> Int {
+  value * 1664525 + 1013904223
+}
+
+///|
+fn mix_range(data_offset : Int, start : Int, end : Int, rounds : Int) -> Unit {
+  for index = start; index < end; index = index + 1 {
+    let mut value = @abi.load_i32(data_offset, index)
+    for round = 0; round < rounds; round = round + 1 {
+      value = mix(value)
+    }
+    @abi.store_i32(data_offset, index, value)
   }
 }
 
@@ -17,30 +20,24 @@ pub fn mayo_abi_version() -> Int {
 }
 
 ///|
-pub fn mayo_abi_capacity() -> Int {
-  @abi.abi_capacity()
-}
-
-///|
 pub fn mayo_contract_hash() -> Int {
-  @abi.contract_hash(@contract.contract_id())
+  @contract.contract_hash()
 }
 
 ///|
-pub fn mayo_request_ptr() -> Int {
-  @abi.request_ptr()
-}
-
-///|
-pub fn mayo_response_ptr() -> Int {
-  @abi.response_ptr()
-}
-
-///|
-/// Reads request JSON from the ABI request buffer and writes response JSON to
-/// the ABI response buffer. `-1` means the request did not match the contract.
-pub fn mayo_handle(request_length : Int) -> Int {
-  @abi.handle_sync(request_length, handle)
+/// Executes directly against imported shared WebAssembly memory.
+pub fn mayo_run(
+  data_offset : Int,
+  capacity : Int,
+  start : Int,
+  end : Int,
+  argument : Int,
+) -> Int {
+  if !@abi.descriptor_is_valid(data_offset, capacity, start, end) {
+    return -1
+  }
+  mix_range(data_offset, start, end, argument)
+  0
 }
 
 ///|

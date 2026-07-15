@@ -1,0 +1,42 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "mizchi/mayo/json"
+
+// Values
+pub fn[Request, Response] json_contract(String) -> JsonContract[Request, Response]
+
+pub fn json_guest_options(String, mailbox_bytes? : Int, timeout_ms? : Int) -> JsonGuestOptions
+
+pub fn[Request : @moonbitlang/core/json.FromJson, Response : ToJson] serve_json(JsonContract[Request, Response], (Request) -> Response) -> Unit
+
+// Errors
+pub suberror JsonError {
+  InvalidArgument(String)
+  CapacityExceeded(Int, Int)
+  GuestFailed(String)
+  Transport(String)
+  Busy
+}
+
+// Types and methods
+pub struct JsonContract[Request, Response] {
+  // private fields
+}
+pub fn[Request, Response] JsonContract::id(Self[Request, Response]) -> String
+
+pub struct JsonGuest[Request, Response] {
+  // private fields
+}
+pub fn[Request : ToJson, Response : @moonbitlang/core/json.FromJson] JsonGuest::call(Self[Request, Response], Request) -> Response raise JsonError
+pub async fn[Request : ToJson, Response : @moonbitlang/core/json.FromJson] JsonGuest::call_async(Self[Request, Response], Request) -> Response raise JsonError
+pub fn[Request, Response] JsonGuest::close(Self[Request, Response]) -> Unit
+pub async fn[Request, Response] JsonGuest::create(JsonContract[Request, Response], JsonGuestOptions) -> Self[Request, Response] raise JsonError
+pub fn[Request, Response] JsonGuest::mailbox_bytes(Self[Request, Response]) -> Int
+
+pub struct JsonGuestOptions {
+  // private fields
+}
+
+// Type aliases
+
+// Traits
+

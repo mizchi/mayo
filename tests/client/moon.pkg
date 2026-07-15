@@ -1,5 +1,6 @@
 import {
   "mizchi/mayo",
+  "mizchi/mayo/examples/wasm_contract" @contract,
   "moonbitlang/async",
 }
 

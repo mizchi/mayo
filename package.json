@@ -1,7 +1,6 @@
 {
   "name": "mayo-web-tests",
   "private": true,
-  "type": "module",
   "engines": {
     "node": ">=24"
   },

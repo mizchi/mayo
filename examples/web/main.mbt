@@ -28,7 +28,12 @@ async fn main {
     abort("Mayo Web requires cross-origin isolation")
   }
   let pool = @mayo.Pool::create(
-    @mayo.pool_options("./mayo_worker.js", capacity=17, worker_count=3),
+    @mayo.kernel_pool_options(
+      @mayo.kernel_contract(@wasm_contract.contract_id()),
+      "./mayo_worker.js",
+      capacity=17,
+      worker_count=3,
+    ),
   )
   defer pool.close()
   let values = pool.values()
@@ -53,44 +58,32 @@ async fn main {
       abort("Mayo Web transform mismatch at index \{index}")
     }
   }
-  show_browser_result("running", "range pool passed; starting typed guest")
-  let guest = @mayo.SyncGuest::create(
-    @contract.contract(),
-    @mayo.sync_guest_options("./sync_guest.js", mailbox_bytes=65536),
+  pool.close()
+  show_browser_result(
+    "running", "JS range pool passed; starting shared Wasm kernel",
   )
-  defer guest.close()
-  show_browser_result("running", "typed guest ready; calling contract")
-  let response = guest.call_async({ name: "Web", values: [3, 5, 8], scale: 4 })
-  if response.message != "hello Web" ||
-    response.total != 64 ||
-    response.item_count != 3 {
-    abort("unexpected typed Web guest response")
-  }
-  show_browser_result("running", "typed JS guest passed; starting Wasm guest")
-  let wasm_contract : @mayo.SyncContract[
-    @wasm_contract.WasmSumRequest,
-    @wasm_contract.WasmSumResponse,
-  ] = @mayo.sync_contract(@wasm_contract.contract_id())
-  let wasm_guest = @mayo.SyncGuest::create(
-    wasm_contract,
-    @mayo.wasm_sync_guest_options(
-      "./mayo_wasm_guest.js",
+  let wasm_pool = @mayo.Pool::create(
+    @mayo.wasm_kernel_pool_options(
+      @mayo.kernel_contract(@wasm_contract.contract_id()),
+      "./mayo_wasm_kernel.js",
       "./wasm_guest.wasm",
-      mailbox_bytes=65536,
+      capacity=17,
+      worker_count=3,
     ),
   )
-  defer wasm_guest.close()
-  let wasm_response = wasm_guest.call_async({
-    name: "Web",
-    values: [3, 5, 8],
-    scale: 4,
-  })
-  if wasm_response.message != "hello Web from Wasm" ||
-    wasm_response.total != 64 ||
-    wasm_response.item_count != 3 {
-    abort("unexpected typed Wasm guest response")
+  defer wasm_pool.close()
+  let wasm_values = wasm_pool.values()
+  for index = 0; index < wasm_values.length(); index = index + 1 {
+    wasm_values.store(index, index)
+  }
+  ignore(wasm_pool.run_async(start=2, end=15, argument=3))
+  for index = 0; index < wasm_values.length(); index = index + 1 {
+    let rounds = if index >= 2 && index < 15 { 3 } else { 0 }
+    if wasm_values.load(index) != mix_rounds(index, rounds) {
+      abort("shared Wasm transform mismatch at index \{index}")
+    }
   }
   show_browser_result(
-    "passed", "MoonBit Web client passed: range pool, typed JS guest, and typed Wasm guest",
+    "passed", "MoonBit Web client passed: JS and Wasm zero-copy pools",
   )
 }

@@ -1,9 +1,9 @@
 import { expect, test } from "@playwright/test";
 
-test("typed guest protocol completes one raw dispatch", async ({ page }) => {
+test("optional JSON guest completes one raw dispatch", async ({ page }) => {
   await page.goto("/");
   const state = await page.evaluate(async () => {
-    const worker = new Worker(new URL("./sync_guest.js", location.href), { type: "module" });
+    const worker = new Worker(new URL("./json_guest.js", location.href), { type: "module" });
     await new Promise<void>((resolve, reject) => {
       worker.addEventListener("message", (event) => {
         if (event.data?.type === "online") resolve();
@@ -33,7 +33,7 @@ test("typed guest protocol completes one raw dispatch", async ({ page }) => {
     Atomics.notify(shared, 0, 1);
     const deadline = performance.now() + 5_000;
     while (Atomics.load(shared, 1) !== 1) {
-      if (performance.now() >= deadline) throw new Error("typed guest dispatch timed out");
+      if (performance.now() >= deadline) throw new Error("JSON guest dispatch timed out");
       await new Promise((resolve) => setTimeout(resolve, 1));
     }
     const responseLength = shared[dataOffset + 1];

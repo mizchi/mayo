@@ -2,13 +2,11 @@
 package "mizchi/mayo/examples/sync_contract"
 
 import {
-  "mizchi/mayo",
   "moonbitlang/core/debug",
-  "moonbitlang/core/json",
 }
 
 // Values
-pub fn contract() -> @mayo.SyncContract[SumRequest, SumResponse]
+pub fn contract() -> @mizchi/mayo/json.JsonContract[SumRequest, SumResponse]
 
 // Errors
 
@@ -17,14 +15,15 @@ pub(all) struct SumRequest {
   name : String
   values : Array[Int]
   scale : Int
-} derive(Eq, ToJson, @debug.Debug, @json.FromJson)
+} derive(Eq, ToJson, @debug.Debug, @moonbitlang/core/json.FromJson)
 
 pub(all) struct SumResponse {
   message : String
   total : Int
   item_count : Int
-} derive(Eq, ToJson, @debug.Debug, @json.FromJson)
+} derive(Eq, ToJson, @debug.Debug, @moonbitlang/core/json.FromJson)
 
 // Type aliases
 
 // Traits
+

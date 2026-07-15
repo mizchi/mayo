@@ -9,11 +9,18 @@ priv type HostWorker
 priv type HostSharedArrayBuffer
 
 ///|
+/// Optional shared WebAssembly memory. JavaScript Workers ignore this value.
+#external
+priv type HostWasmMemory
+
+///|
 /// Shared views allocated for one pool.
 priv struct HostShared {
   buffer : HostSharedArrayBuffer
+  memory : HostWasmMemory
   control : SharedInts
   values : SharedSlice
+  control_offset : Int
   data_offset : Int
 }
 
@@ -22,21 +29,44 @@ extern "js" fn create_host_shared(
   worker_count : Int,
   capacity : Int,
   slot_length : Int,
+  use_wasm_memory : Bool,
+  wasm_shared_base : Int,
+  wasm_max_pages : Int,
 ) -> HostShared =
-  #| (workerCount, capacity, slotLength) => {
+  #| (workerCount, capacity, slotLength, useWasmMemory, wasmSharedBase, wasmMaxPages) => {
   #|   const controlElements = workerCount * slotLength;
-  #|   const dataOffset = Math.ceil(controlElements / slotLength) * slotLength;
-  #|   const buffer = new SharedArrayBuffer(
-  #|     (dataOffset + capacity) * Int32Array.BYTES_PER_ELEMENT,
-  #|   );
+  #|   const sharedBase = useWasmMemory ? wasmSharedBase : 0;
+  #|   const dataOffset = sharedBase +
+  #|     Math.ceil(controlElements / slotLength) * slotLength;
+  #|   const requiredBytes =
+  #|     (dataOffset + capacity) * Int32Array.BYTES_PER_ELEMENT;
+  #|   const pageBytes = 64 * 1024;
+  #|   const pages = Math.ceil(requiredBytes / pageBytes);
+  #|   if (useWasmMemory && pages > wasmMaxPages) {
+  #|     throw new Error(`shared Wasm pool exceeds the ${wasmMaxPages}-page ABI limit`);
+  #|   }
+  #|   const memory = useWasmMemory
+  #|     ? new WebAssembly.Memory({
+  #|       initial: Math.max(64, pages),
+  #|       maximum: wasmMaxPages,
+  #|       shared: true,
+  #|     })
+  #|     : undefined;
+  #|   const buffer = memory?.buffer ?? new SharedArrayBuffer(requiredBytes);
   #|   return {
   #|     buffer,
-  #|     control: new Int32Array(buffer, 0, dataOffset),
+  #|     memory,
+  #|     control: new Int32Array(
+  #|       buffer,
+  #|       sharedBase * Int32Array.BYTES_PER_ELEMENT,
+  #|       dataOffset - sharedBase,
+  #|     ),
   #|     values: new Int32Array(
   #|       buffer,
   #|       dataOffset * Int32Array.BYTES_PER_ELEMENT,
   #|       capacity,
   #|     ),
+  #|     control_offset: sharedBase,
   #|     data_offset: dataOffset,
   #|   };
   #| }
@@ -48,7 +78,10 @@ extern "js" fn start_host_worker(
   timeout_ms : Int,
 ) -> @js_async.Promise[HostWorker] =
   #| (workerUrl, protocolId, timeoutMs) => new Promise((resolve, reject) => {
-  #|   const worker = new Worker(new URL(workerUrl, import.meta.url), { type: "module" });
+  #|   const baseUrl = globalThis.document?.baseURI ??
+  #|     globalThis.Deno?.mainModule ?? globalThis.location?.href ??
+  #|     `file://${globalThis.process?.cwd?.() ?? "."}/`;
+  #|   const worker = new Worker(new URL(workerUrl, baseUrl), { type: "module" });
   #|   const timeout = setTimeout(() => {
   #|     cleanup();
   #|     worker.terminate();
@@ -94,17 +127,25 @@ extern "js" fn initialize_host_worker(
   worker : HostWorker,
   id : Int,
   buffer : HostSharedArrayBuffer,
+  memory : HostWasmMemory,
+  control_offset : Int,
   slot_base : Int,
   data_offset : Int,
+  data_capacity : Int,
   timeout_ms : Int,
 ) -> @js_async.Promise[Unit] =
-  #| (worker, id, buffer, slotBase, dataOffset, timeoutMs) =>
+  #| (worker, id, buffer, memory, controlOffset, slotBase, dataOffset, dataCapacity, timeoutMs) =>
   #|   new Promise((resolve, reject) => {
   #|     const timeout = setTimeout(() => {
   #|       cleanup();
   #|       reject(new Error(`worker initialization timed out after ${timeoutMs} ms`));
   #|     }, timeoutMs);
   #|     const onMessage = (event) => {
+  #|       if (event.data?.type === "startup-error") {
+  #|         cleanup();
+  #|         reject(new Error(event.data.message ?? "worker initialization failed"));
+  #|         return;
+  #|       }
   #|       if (event.data?.type !== "initialized" || event.data.id !== id) return;
   #|       cleanup();
   #|       resolve(undefined);
@@ -125,8 +166,11 @@ extern "js" fn initialize_host_worker(
   #|       type: "atomic-init",
   #|       id,
   #|       shared: buffer,
+  #|       memory,
+  #|       controlOffset,
   #|       slotBase,
   #|       dataOffset,
+  #|       dataCapacity,
   #|     });
   #|   })
 
@@ -159,7 +203,10 @@ extern "js" fn wasm_guest_worker_url(
   protocol_id : String,
 ) -> String =
   #| (workerUrl, wasmUrl, protocolId) => {
-  #|   const url = new URL(workerUrl, import.meta.url);
+  #|   const baseUrl = globalThis.document?.baseURI ??
+  #|     globalThis.Deno?.mainModule ?? globalThis.location?.href ??
+  #|     `file://${globalThis.process?.cwd?.() ?? "."}/`;
+  #|   const url = new URL(workerUrl, baseUrl);
   #|   url.searchParams.set("mayo-wasm", wasmUrl);
   #|   url.searchParams.set("mayo-contract", protocolId);
   #|   return url.href;

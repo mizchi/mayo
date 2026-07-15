@@ -1,24 +1,20 @@
 // Generated using `moon info`, DON'T EDIT IT
 package "mizchi/mayo"
 
-import {
-  "moonbitlang/core/json",
-}
-
 // Values
+pub fn kernel_contract(String) -> KernelContract
+
+pub fn kernel_pool_options(KernelContract, String, capacity~ : Int, worker_count? : Int, timeout_ms? : Int) -> PoolOptions
+
 pub fn pool_options(String, capacity~ : Int, worker_count? : Int, timeout_ms? : Int) -> PoolOptions
 
 pub fn run_worker(SharedInts, Int, Int, (SharedSlice, Int, Int, Int) -> Unit) -> Unit
 
-pub fn[Request : @json.FromJson, Response : ToJson] serve_sync(SyncContract[Request, Response], (Request) -> Response) -> Unit
+pub fn serve(KernelContract, (SharedSlice, Int, Int, Int) -> Unit) -> Unit
 
 pub fn start((SharedSlice, Int, Int, Int) -> Unit) -> Unit
 
-pub fn[Request, Response] sync_contract(String) -> SyncContract[Request, Response]
-
-pub fn sync_guest_options(String, mailbox_bytes? : Int, timeout_ms? : Int) -> SyncGuestOptions
-
-pub fn wasm_sync_guest_options(String, String, mailbox_bytes? : Int, timeout_ms? : Int) -> SyncGuestOptions
+pub fn wasm_kernel_pool_options(KernelContract, String, String, capacity~ : Int, worker_count? : Int, timeout_ms? : Int) -> PoolOptions
 
 // Errors
 pub suberror PoolError {
@@ -29,15 +25,12 @@ pub suberror PoolError {
   Busy
 }
 
-pub suberror SyncError {
-  InvalidArgument(String)
-  CapacityExceeded(Int, Int)
-  GuestFailed(String)
-  Transport(String)
-  Busy
-}
-
 // Types and methods
+pub struct KernelContract {
+  // private fields
+}
+pub fn KernelContract::id(Self) -> String
+
 pub struct Pool {
   // private fields
 }
@@ -68,24 +61,6 @@ pub fn SharedSlice::fill(Self, Int) -> Unit
 pub fn SharedSlice::length(Self) -> Int
 pub fn SharedSlice::load(Self, Int) -> Int
 pub fn SharedSlice::store(Self, Int, Int) -> Unit
-
-pub struct SyncContract[Request, Response] {
-  // private fields
-}
-pub fn[Request, Response] SyncContract::id(Self[Request, Response]) -> String
-
-pub struct SyncGuest[Request, Response] {
-  // private fields
-}
-pub fn[Request : ToJson, Response : @json.FromJson] SyncGuest::call(Self[Request, Response], Request) -> Response raise SyncError
-pub async fn[Request : ToJson, Response : @json.FromJson] SyncGuest::call_async(Self[Request, Response], Request) -> Response raise SyncError
-pub fn[Request, Response] SyncGuest::close(Self[Request, Response]) -> Unit
-pub async fn[Request, Response] SyncGuest::create(SyncContract[Request, Response], SyncGuestOptions) -> Self[Request, Response] raise SyncError
-pub fn[Request, Response] SyncGuest::mailbox_bytes(Self[Request, Response]) -> Int
-
-pub struct SyncGuestOptions {
-  // private fields
-}
 
 // Type aliases
 

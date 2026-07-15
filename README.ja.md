@@ -2,208 +2,47 @@
 
 [English](./README.md)
 
-Mayo は MoonBit 向けの実験的な data-parallel Worker pool です。host client は MoonBit で記述して
-JavaScript へコンパイルし、guest handler は JavaScript または WebAssembly へ事前コンパイルして、
-モダンブラウザまたは Deno で実行します。
+Mayo は MoonBit 向けの実験的な zero-copy データ並列 Worker pool です。Host は MoonBit から
+JavaScript にコンパイルします。事前ビルドする kernel は MoonBit の JavaScript backend と Wasm
+linear-memory backend に対応し、Deno または cross-origin isolated な Web page で実行できます。
 
-データと task descriptor は `SharedArrayBuffer` で共有します。常駐 Worker を JavaScript Atomics で
-sleep/wake することで、Worker の起動コストを複数 batch に償却します。Rust Rayon のような MoonBit API
-を目標にしていますが、現在の scheduler は work stealing ではなく、重複しない static chunk です。
+常駐 Worker は JavaScript Atomics で sleep/wake します。bulk `Int32` data は shared memory に置いた
+ままで、dispatch では POD descriptor `(start, end, argument)` だけを通知します。長期的な目標は
+MoonBit 版 Rayon です。現在の scheduler は non-overlapping な static range を使います。
 
 > [!WARNING]
-> 実験的な API です。MoonBit の heap object、closure、通常 object を Worker 間で直接共有するものでは
-> ありません。型付き API は値を shared memory 内の UTF-8 JSON mailbox へ serialize します。低レベル
-> API は数値データ用に `Int32Array` ベースの `SharedSlice` を zero-copy で公開します。
+> MoonBit heap object、closure、String、通常の Array は共有しません。contract は shared `Int32`
+> region の application 固有 layout を定義します。可変長 data は offset と length で参照します。
 
-## 対応 runtime
-
-| host runtime | pool 作成      | dispatch API                             | 必要条件                              |
-| ------------ | -------------- | ---------------------------------------- | ------------------------------------- |
-| Web document | `Pool::create` | `Pool::run_async`                        | cross-origin isolation（COOP + COEP） |
-| Deno         | `Pool::create` | `Pool::run` 推奨。`run_async` も利用可能 | local Worker には `--allow-read`      |
-| Node.js      | 未対応         | —                                        | Worker adapter を予定                 |
-
-[`Atomics.wait`](https://tc39.es/ecma262/multipage/structured-data.html#sec-atomics.wait) は
-blocking API であり、browser document の main thread では使えません。そのため Mayo は Web dispatch
-に
-[`Atomics.waitAsync`](https://tc39.es/ecma262/multipage/structured-data.html#sec-atomics.waitasync)
-を使い、 runtime に存在しない場合は timer-based polling へ fallback します。Web document から同期
-`Pool::run` を呼ぶと `PoolError::InvalidArgument` になり、 `run_async` を使うよう案内します。
-
-## 構成
-
-```text
-MoonBit host client                         MoonBit Worker kernel
-  Pool::create / run_async                    @mayo.start(kernel)
-           │                                           │
-           └──── MoonBit JS backendでコンパイル ───────┘
-                              │
-                    Browser または Deno
-                              │
-                 SharedArrayBuffer (zero-copy)
-                   ├─ Worker 0 control slot
-                   ├─ Worker 1 control slot
-                   └─ Int32 data region
-```
-
-各 Worker は自分の control slot にある epoch が変わるまで sleep します。dispatch は `[start, end)`
-を 重複しない範囲に分け、すべての Worker が期待する done epoch を公開した時点で完了します。
-
-`Worker`、`SharedArrayBuffer`、Atomics、Promise、`performance.now()` に触る runtime 境界だけが
-JavaScript FFI です。option validation、range 分割、lifecycle state、dispatch は MoonBit 実装です。
-
-## 型付き host/guest contract
-
-推奨する境界では、host と guest を別々の MoonBit executable としてコンパイルします。両者は request
-型、response 型、version 付き固定 ID を定義した小さな contract package を compile 時に import
-します。
-
-```text
-contract.mbt                    compile 時に両者が import
-  Request / Response                    │
-  "my-app/task/v1"              ┌───────┴───────┐
-                                │               │
-host.mbt -> host.js        guest.mbt -> guest.js
-  SyncGuest::call             serve_sync
-         └──── SharedArrayBuffer JSON mailbox ────┘
-```
-
-MoonBit 標準の JSON trait で共有 contract を定義します。
-
-```moonbit
-pub(all) struct SumRequest {
-  name : String
-  values : Array[Int]
-  scale : Int
-} derive(ToJson, FromJson)
-
-pub(all) struct SumResponse {
-  message : String
-  total : Int
-} derive(ToJson, FromJson)
-
-pub fn contract() -> @mayo.SyncContract[SumRequest, SumResponse] {
-  @mayo.sync_contract("my-app/sum/v1")
-}
-```
-
-guest は型付き handler と一緒にコンパイルします。
-
-```moonbit
-fn handle(request : @contract.SumRequest) -> @contract.SumResponse {
-  // decode 済みの値から response を計算する
-}
-
-fn main {
-  @mayo.serve_sync(@contract.contract(), handle)
-}
-```
-
-MoonBit host は事前ビルドした guest を起動し、Worker handshake で contract ID を検証します。
-
-```moonbit
-async fn main {
-  let guest = @mayo.SyncGuest::create(
-    @contract.contract(),
-    @mayo.sync_guest_options("./guest.js", mailbox_bytes=65536),
-  )
-  defer guest.close()
-
-  // Deno: blocking Atomics.wait
-  let response = guest.call({ name: "MoonBit", values: [3, 5, 8], scale: 4 })
-
-  // browser document では non-blocking 版を使う
-  // let response = guest.call_async(request)
-}
-```
-
-実装例は [`examples/sync_contract`](./examples/sync_contract)、
-[`examples/sync_guest`](./examples/sync_guest)、[`examples/sync_host`](./examples/sync_host) に
-あります。`just build-worker` は別成果物 `dist/sync_host.js` と `dist/sync_guest.js` を生成し、
-`deno run --allow-read dist/sync_host.js` で end-to-end 実行できます。
-
-`ToJson` / `FromJson` を実装する nested struct、enum、array、map、string、optional value などをこの
-境界で渡せます。ただし同時アクセス可能な heap object にするのではなく、mailbox の内外へ copy
-します。`mailbox_bytes` を超える request は `SyncError::CapacityExceeded`、version ID
-の不一致は最初の dispatch より前の `SyncGuest::create` で失敗します。 request / response schema
-を非互換に変更したときは ID も変更します。
-
-## MoonBit/Wasm guest
-
-guest handler を MoonBit の linear-memory `wasm` backend でコンパイルしても、host API
-は変わりません。 Worker 生成、Atomics、Wasm instantiate は汎用
-[`wasm/guest_runtime.js`](./wasm/guest_runtime.js) glue が 担当し、JSON decode、型付き handler、JSON
-encode は Wasm 内で実行します。
+## Data path
 
 ```text
 MoonBit/JS host
-  SyncGuest::call / call_async
-            │ SharedArrayBuffer mailbox
-汎用 JS Worker glue
-            │ UTF-8 bytesをcopy
-MoonBit/Wasm guest
-  FromJson -> handler -> ToJson
+  Pool::values() -> SharedSlice
+          │
+          │ 同じ SharedArrayBuffer / shared WebAssembly.Memory
+          ▼
+┌──────────────────────────────────────────────────────────┐
+│ control slots │ POD descriptors │ application data      │
+└──────────────────────────────────────────────────────────┘
+          ▲                         ▲
+          │ direct load/store       │ direct load/store
+ MoonBit/JS Worker             MoonBit/Wasm Worker
 ```
 
-contract package は JS と Wasm の両 target をサポートし、JS 専用の Mayo host package を import
-しない 構成にします。derived request/response 型と、固定の `contract_id()` だけを置きます。Wasm
-guest はその package と [`mizchi/mayo/wasm/abi`](./wasm/abi/abi.mbt) を import します。
+この経路には JSON、UTF-8 変換、`postMessage` payload clone、SAB から Wasm への payload copy が
+ありません。Host と guest は別々にコンパイルし、versioned ASCII `KernelContract` ID で結びます。
+
+## JavaScript kernel
+
+Host と guest で同じ contract ID を定義します。shared layout または kernel semantics を非互換に
+変更したら ID も変更します。
 
 ```moonbit
-fn handle(request : @contract.WasmSumRequest) -> @contract.WasmSumResponse {
-  // Wasm内で実行される
-}
+// guest.mbt
+let contract = @mayo.kernel_contract("my-app/mix-i32/v1")
 
-pub fn mayo_abi_version() -> Int { @abi.abi_version() }
-pub fn mayo_abi_capacity() -> Int { @abi.abi_capacity() }
-pub fn mayo_contract_hash() -> Int {
-  @abi.contract_hash(@contract.contract_id())
-}
-pub fn mayo_request_ptr() -> Int { @abi.request_ptr() }
-pub fn mayo_response_ptr() -> Int { @abi.response_ptr() }
-pub fn mayo_handle(length : Int) -> Int {
-  @abi.handle_sync(length, handle)
-}
-```
-
-guest package の Wasm link option で、この6関数と linear memory を export します。完全な設定は
-[`examples/wasm_guest/moon.pkg`](./examples/wasm_guest/moon.pkg) にあります。MoonBit 公式の
-[package configuration](https://docs.moonbitlang.com/en/latest/toolchain/moon/package.html#wasm-backend-link-options)
-には Wasm の `exports`、`export-memory-name`、memory limit、heap start option が説明されています。
-
-MoonBit/JS host は汎用 glue と `.wasm` artifact を指定します。
-
-```moonbit
-let guest = @mayo.SyncGuest::create(
-  contract,
-  @mayo.wasm_sync_guest_options(
-    "./mayo_wasm_guest.js",
-    "./guest.wasm",
-    mailbox_bytes=65536,
-  ),
-)
-let response = guest.call(request)       // Deno
-// let response = guest.call_async(request) // Web document
-```
-
-`just build-wasm` で汎用 glue と Wasm artifact を生成・配置し、`just example-wasm`
-で別コンパイルした Deno host/Wasm guest を実行できます。Worker が利用可能になる前に ABI version と
-contract ID の FNV-1a hash を検証します。ABI v1 の request / response 上限は encode 後 1 MiB です。
-
-## 低レベル zero-copy range API
-
-### 1. MoonBit Worker kernel
-
-[`examples/mix_worker/main.mbt`](./examples/mix_worker/main.mbt) は、割り当てられた各要素へ LCG
-演算を 適用します。
-
-```moonbit
-fn kernel(
-  values : @mayo.SharedSlice,
-  start : Int,
-  end : Int,
-  rounds : Int,
-) -> Unit {
+fn kernel(values : @mayo.SharedSlice, start : Int, end : Int, rounds : Int) {
   for index = start; index < end; index = index + 1 {
     let mut value = values.load(index)
     for round = 0; round < rounds; round = round + 1 {
@@ -214,40 +53,113 @@ fn kernel(
 }
 
 fn main {
-  @mayo.start(kernel)
+  @mayo.serve(contract, kernel)
 }
 ```
 
-`start` と `end` は shared slice の論理 index です。Worker の範囲は重複しないため、
-`SharedSlice::load` / `store` は意図的に非 atomic access です。
-
-### 2. Web から使う
-
-[`examples/web/main.mbt`](./examples/web/main.mbt) は MoonBit で書かれた browser client です。
+MoonBit host は事前ビルドした kernel を起動し、shared region を所有します。
 
 ```moonbit
+// host.mbt
 async fn main {
+  let contract = @mayo.kernel_contract("my-app/mix-i32/v1")
   let pool = @mayo.Pool::create(
-    @mayo.pool_options(
-      "./mayo_worker.js",
+    @mayo.kernel_pool_options(
+      contract,
+      "./guest.js",
       capacity=1048576,
       worker_count=4,
     ),
   )
-  defer {
-    pool.close()
-  }
+  defer pool.close()
 
   let values = pool.values()
   values.fill(1)
-  let result = pool.run_async(end=values.length(), argument=64)
+
+  // Deno の main agent では Atomics.wait で block できる。
+  let result = pool.run(end=values.length(), argument=64)
+
+  // Browser document の main thread では async 版を使う。
+  // let result = pool.run_async(end=values.length(), argument=64)
   println("dispatch: \{result.elapsed_ms} ms")
 }
 ```
 
-document、Worker、subresource を
-[cross-origin isolated](https://html.spec.whatwg.org/multipage/webappapis.html#cross-origin-isolated-capability)
-な response として配信してください。同一 origin だけで構成する最小例では次の header を使います。
+`start` / `end` は `SharedSlice` の logical index です。Worker range は重ならないため、data の
+`SharedSlice::load` / `store` は意図的に non-atomic です。Atomics は scheduler の control slot
+だけで使います。
+
+構造化 data は小さな contract package で POD layout を定義します。たとえば descriptor に
+`(input_offset, input_length, output_offset, output_length)` を置き、配列本体は shared region に
+残します。Mayo はこの layout を serialization で隠しません。
+
+## Wasm kernel
+
+Wasm kernel も同じ Pool と data layout を使います。汎用 JavaScript glue が各 kernel を同じ imported
+shared `WebAssembly.Memory` で instantiate し、全 Worker と host が同じ bytes を読み書きします。
+
+```moonbit
+fn kernel(data_offset : Int, start : Int, end : Int, rounds : Int) {
+  // allocation-free な POD 計算
+  // @abi.load_i32(data_offset, index) / @abi.store_i32(...) を使う
+}
+
+pub fn mayo_abi_version() -> Int { @abi.abi_version() }
+pub fn mayo_contract_hash() -> Int { @contract.contract_hash() }
+pub fn mayo_run(data_offset : Int, capacity : Int, start : Int, end : Int, argument : Int) -> Int {
+  if !@abi.descriptor_is_valid(data_offset, capacity, start, end) { return -1 }
+  kernel(data_offset, start, end, argument)
+  0
+}
+```
+
+guest package は bounded memory を import して ABI v2 を export します。
+
+```moonbit
+options(
+  link: {
+    "wasm": {
+      "exports": ["mayo_abi_version", "mayo_contract_hash", "mayo_run"],
+      "import-memory": { "module": "env", "name": "memory" },
+      "memory-limits": { "min": 64, "max": 512 },
+      "heap-start-address": 3145728,
+    },
+  },
+)
+```
+
+現状の MoonBit はこの memory import を non-shared として出力します。`just build-wasm` は
+[`wasm/patch_shared_memory.ts`](./wasm/patch_shared_memory.ts) を通し、memory limits flag だけを
+shared に変更して import を検証します。Host 側は次のように作成します。
+
+```moonbit
+let pool = @mayo.Pool::create(
+  @mayo.wasm_kernel_pool_options(
+    @mayo.kernel_contract(@contract.contract_id()),
+    "./mayo_wasm_kernel.js",
+    "./kernel.wasm",
+    capacity=1048576,
+    worker_count=4,
+  ),
+)
+```
+
+この経路の Wasm kernel は allocation-free とし、`load_i32` / `store_i32` 経由で POD value だけを
+操作してください。export する contract hash も事前生成した integer literal にします。Wasm 内で
+String から計算すると allocation が起きる可能性があります。独立した Wasm instance 間で MoonBit
+runtime heap を共有することはサポートしません。 実装例は
+[`examples/wasm_guest`](./examples/wasm_guest) と [`examples/wasm_host`](./examples/wasm_host)
+にあります。
+
+## Browser と Deno
+
+| Host runtime | Pool 作成      | Dispatch                        | 必要条件                             |
+| ------------ | -------------- | ------------------------------- | ------------------------------------ |
+| Web document | `Pool::create` | `Pool::run_async`               | cross-origin isolation (COOP + COEP) |
+| Deno         | `Pool::create` | `Pool::run` / `Pool::run_async` | local Worker に `--allow-read`       |
+| Node.js      | 未対応         | —                               | Worker adapter を予定                |
+
+Browser では document、Worker、Wasm、その他 subresource に次の header が必要です。
 
 ```http
 Cross-Origin-Opener-Policy: same-origin
@@ -255,175 +167,90 @@ Cross-Origin-Embedder-Policy: require-corp
 Cross-Origin-Resource-Policy: same-origin
 ```
 
-この repository には動作する server と browser test が含まれます。
-
-```console
-pnpm install
-pnpm exec playwright install chromium firefox webkit
-just serve-web   # http://127.0.0.1:4173 を開く
-just test-web    # Chromium・Firefox・WebKit統合テスト
-```
-
-Playwright test は Chromium・Firefox・WebKit で `crossOriginIsolated`、zero-copy range pool、raw
-typed protocol、MoonBit `SyncGuest::call_async` から別コンパイルした JavaScript / Wasm guest
-への往復を 検証します。
-
-### 3. Deno から使う
-
-[`examples/host/main.mbt`](./examples/host/main.mbt) も同じ MoonBit API を使います。Deno main agent
-は `Atomics.wait` で block できるため、最小 dispatch overhead には同期 `run` を使います。
-
-```moonbit
-let result = pool.run(end=values.length(), argument=64)
-```
-
-```console
-just example
-```
-
-Worker URL は生成された host module の `import.meta.url` からの相対 URL です。local Worker file を
-読むには Deno の `--allow-read` permission が必要です。
-
-### host package 設定
-
-Browser と Deno の host は `Pool::create` と `run_async` のために async runtime を import します。
-
-```moonbit
-import {
-  "mizchi/mayo" @mayo,
-  "moonbitlang/async",
-}
-
-supported_targets = "js"
-
-pkgtype(kind: "executable")
-```
+Playwright suite は Chromium、Firefox、WebKit で JavaScript `SharedArrayBuffer` kernel と Wasm
+shared-memory kernel の両方を検証します。
 
 ## 公開 API
 
-### 型付き host/guest
-
-- `sync_contract[Request, Response](id) -> SyncContract[Request, Response]`
-- `sync_guest_options(worker_url, mailbox_bytes?=1048576, timeout_ms?=30000)`
-- `wasm_sync_guest_options(glue_url, wasm_url, mailbox_bytes?=1048576, timeout_ms?=30000)`
-- `SyncGuest::create(contract, options)` — 常駐 guest を 1 個起動し contract ID を検証
-- `SyncGuest::call(request) -> Response` — Deno 用 blocking API
-- `SyncGuest::call_async(request) -> Response` — browser-safe API
-- `SyncGuest::mailbox_bytes()` / `SyncGuest::close()`
-- `serve_sync(contract, handler)` — 型付き guest entry point
-- `SyncError::{InvalidArgument, CapacityExceeded, GuestFailed, Transport, Busy}`
-
-host request には `ToJson`、host response には `FromJson` が必要です。guest ではその逆です。この
-compile-time trait bound と runtime contract ID を組み合わせて境界を定義します。
-
-Wasm guest package は `@abi.handle_sync` と `abi_version`、`abi_capacity`、`contract_hash`、
-`request_ptr`、`response_ptr` を使い、汎用 glue が要求する ABI v1 の6 export を実装します。
-
-### Host
-
-- `pool_options(worker_url, capacity~, worker_count?=4, timeout_ms?=30000)`
+- `kernel_contract(id) -> KernelContract`
+- `kernel_pool_options(contract, worker_url, capacity~, worker_count?=4, timeout_ms?=30000)`
+- `wasm_kernel_pool_options(contract, glue_url, wasm_url, capacity~, worker_count?=4, timeout_ms?=30000)`
 - `Pool::create(options)`
 - `Pool::values() -> SharedSlice`
-- `Pool::run(start?=0, end~, argument?=0) -> RunResult` — blocking Deno API
-- `Pool::run_async(start?=0, end~, argument?=0) -> RunResult` — browser-safe API
-- `Pool::worker_count()` / `Pool::capacity()`
-- `Pool::close()`
-- `PoolError::{InvalidArgument, WorkerFailed, Timeout, Closed, Busy}`
+- `Pool::run(start?=0, end~, argument?=0) -> RunResult` — Deno など blocking 可能な runtime
+- `Pool::run_async(start?=0, end~, argument?=0) -> RunResult` — browser document
+- `Pool::worker_count()` / `Pool::capacity()` / `Pool::close()`
+- `serve(contract, kernel)` — JavaScript Worker
+- `SharedSlice::length()` / `load()` / `store()` / `fill()`
 
-同じ pool で同時に実行できる batch は 1 個です。range は shared data region の範囲内か検証されます。
+`pool_options` と `start` は built-in `mayo.range/v1` contract を使う shortcut として残しています。
 
-### Worker
+## Optional JSON compatibility package
 
-- `@mayo.start(kernel)` — Mayo Worker protocol を install
-- `@mayo.SharedSlice` — private control region を除いた shared data view
-- `SharedSlice::length()` / `load(index)` / `store(index, value)` / `fill(value)`
-- `@mayo.run_worker(...)` — 複合 Worker 用の低レベル entry point
+`mizchi/mayo/json` は明示的な compatibility layer で、Mayo の主 API ではありません。`JsonGuest` は
+`ToJson` / `FromJson` を実装する任意の MoonBit value を扱えますが、call ごとに JSON
+stringify/parse、UTF-8 変換、allocation、mailbox copy が発生します。JavaScript guest 専用であり、
+JSON Wasm ABI は提供しません。
+
+この package は `JsonContract`、`json_contract`、`JsonGuest`、`json_guest_options`、`serve_json`、
+`JsonError` を export します。例は [`examples/sync_contract`](./examples/sync_contract) にあります。
 
 ## 現在の制約
 
-- 型付き API は JSON/UTF-8 を copy する。MoonBit heap object の zero-copy 共有ではない
-- Wasm guest では shared mailbox と Wasm linear memory の間にもう1回 copy が入る
-- Wasm guest ABI v1 は linear-memory `wasm` backend と 1 MiB mailbox に対応。`wasm-gc` は未対応
-- 低レベル zero-copy data region は `Int32Array` のみ
-- kernel は Worker module として事前コンパイルする必要がある
-- 1 batch で渡せる追加引数は 1 個の `Int`
-- scheduling は static chunk。dynamic chunk と work stealing は未実装
-- 実行中の cancel、Worker crash recovery、kernel panic の伝播は未実装
-- MoonBit に Rust の `Send` / `Sync` 相当の型検査はない
-- Web page は cross-origin isolated である必要があり、third-party subresource も選択した embedder
-  policy を満たす必要がある
+- shared data region は現在 `Int32Array` のみ
+- 1 dispatch は 1 range と追加の `Int` argument を持つ
+- scheduling は static chunk。dynamic grain と work stealing は未実装
+- Wasm kernel は allocation や shared MoonBit heap object を使えない
+- Wasm shared memory は MoonBit runtime image を含め 512 pages（32 MiB）まで
+- cancel、Worker crash recovery、kernel panic propagation は未実装
+- MoonBit にはこの境界に対する Rust の `Send` / `Sync` 相当の型検査がない
+- Web page は cross-origin isolated である必要がある
 - Node.js は未対応
-
-均一な配列処理には static chunk で十分ですが、処理時間が不均一な task や再帰的に増える task には
-dynamic scheduling と work stealing が必要です。
 
 ## 開発
 
 ```console
-just test          # MoonBit・Deno・browser・Rust・C の契約テスト
+just test          # MoonBit・Deno・browser・Rust・C test
 just check         # format・lint・型検査・native check・test
-just test-web      # Playwright Chromium・Firefox・WebKit統合テスト
+just test-web      # Chromium / Firefox / WebKit 統合 test
 just serve-web     # COOP/COEP 付き Web example server
-just example       # Deno host example
-just example-sync  # 別コンパイルした型付きDeno host/guest
-just example-wasm  # MoonBit/JS hostとMoonBit/Wasm guest
+just example       # MoonBit/JS Deno pool
+just example-wasm  # MoonBit/JS host と shared-memory MoonBit/Wasm kernel
+just example-json  # optional JSON compatibility example
 just compare 4     # pthread / mmap process / Rust / Rayon 比較
-just bench         # Worker 起動と Mutex 競合の実験
-```
-
-主な構成:
-
-```text
-host_client.mbt, host_runtime_js.mbt  MoonBit host APIとJavaScript境界
-atomics_js.mbt, mayo.mbt              shared memoryとWorker loop
-protocol.mbt, start.mbt               control protocolとWorker entry point
-sync_contract.mbt                     型付きcontract・mailbox・host/guest API
-wasm/abi/, wasm/guest_runtime.js       MoonBit/Wasm ABIと汎用JS glue
-examples/sync_contract/               request/response contract package
-examples/sync_host/, sync_guest/      別コンパイルする型付きexecutable
-examples/wasm_contract/               JS/Wasm共通のrequest・response型
-examples/wasm_host/, wasm_guest/      別コンパイルするJS host・Wasm guest
-examples/web/                         MoonBit browser client
-examples/host/                        MoonBit Deno client
-examples/mix_worker/                  MoonBit kernel
-tests/web/                            COOP/COEP serverとPlaywright test
-tests/client/                         MoonBit同士のDeno統合テスト
-worker/, bench/                       内部測定用
-native/                               C pthread/mmap・Rust std/Rayon比較版
 ```
 
 ## ベンチマーク
 
-`just compare 4` は pool と shared region を 1 度だけ作り、計測対象の batch では range
-と演算回数だけを 通知します。Worker/process 起動と data copy は含みません。Mayo backend の host も
-MoonBit であり、 `bench/mayo/main.mbt` をコンパイルして Deno で実行します。
+`just compare 4` は pool と shared region を一度だけ作成します。計測 batch では range
+と演算回数だけを 通知し、Worker/process startup と data copy は除外します。`Mayo JS` は MoonBit/JS
+kernel、`Mayo Wasm` は allocation-free な shared `WebAssembly.Memory` kernel です。
 
 2026-07-15、Mac17,2 / 32 GiB / 10 logical CPUs / darwin-aarch64、Deno 2.6.4、MoonBit 0.1.20260713 で
 5 回独立実行した中央値です。
 
 | backend         | dispatch p50 | dispatch p95 | memory bandwidth | compute throughput |
 | --------------- | -----------: | -----------: | ---------------: | -----------------: |
-| C pthread       |      10.0 µs |      20.0 µs |      102.8 GiB/s |        8.28 Gops/s |
-| C mmap process  |      11.0 µs |      22.0 µs |      103.1 GiB/s |        8.32 Gops/s |
-| Rust std pool   |      9.58 µs |      20.3 µs |       81.9 GiB/s |        9.73 Gops/s |
-| Rust Rayon      |      17.5 µs |      80.4 µs |       82.1 GiB/s |        7.64 Gops/s |
-| MoonBit message |      37.8 µs |      59.0 µs |       18.5 GiB/s |        8.54 Gops/s |
-| Mayo            |      9.87 µs |      22.3 µs |       26.1 GiB/s |        8.69 Gops/s |
+| C pthread       |      9.00 µs |      20.0 µs |       77.2 GiB/s |        5.83 Gops/s |
+| C mmap process  |      11.0 µs |      23.0 µs |       76.8 GiB/s |        8.25 Gops/s |
+| Rust std pool   |      8.75 µs |      18.9 µs |       81.3 GiB/s |        9.56 Gops/s |
+| Rust Rayon      |      13.7 µs |      29.5 µs |       71.8 GiB/s |        6.79 Gops/s |
+| MoonBit message |      43.9 µs |      76.6 µs |       14.2 GiB/s |        6.40 Gops/s |
+| Mayo JS         |      10.0 µs |      22.5 µs |       20.6 GiB/s |        8.55 Gops/s |
+| Mayo Wasm       |      10.6 µs |      25.4 µs |       26.6 GiB/s |        6.54 Gops/s |
 
-この実行では Mayo の dispatch p50 は pthread の 0.99 倍、compute throughput は 1.05 倍でした。 1
-演算/要素の memory case は pthread bandwidth の 25.4% で、生成 JavaScript と V8 typed-array loop が
-native の vectorized loop に及ばない差が現れます。core 割当、温度、電源状態、runtime version で
-結果は変わるため、手元の `just compare` を基準にしてください。
+今回の Mayo JS dispatch p50 は pthread の 1.12 倍、Mayo Wasm は 1.18 倍でした。memory bandwidth
+はそれぞれ pthread の 26.7% と 34.5%、compute throughput は 1.47 倍と 1.12 倍です。core 割当、
+温度、電源状態、runtime version で結果は変わるため、手元の `just compare` を基準にしてください。
 
 ## Roadmap
 
-1. 複数引数と複数 shared slice の POD descriptor
+1. 複数 argument / shared slice 向け typed POD descriptor
 2. grain size を指定できる dynamic chunk counter
-3. shared memory 上の task ring と sleep/wake protocol
-4. Worker ごとの Chase–Lev deque と work stealing
-5. error propagation、cancel、task recovery
-6. `par_for` / `par_chunks` 高レベル API
-7. Node.js Worker adapter
+3. shared task ring と Worker ごとの Chase–Lev deque
+4. work stealing、cancel、task recovery
+5. `par_for` / `par_chunks` 高レベル API
+6. Node.js Worker adapter
 
 着想元:
 [Rust/Wasm で shared memory と Mutex を使う実験](https://zenn.dev/grainrigi/articles/b7c2320ef13c71)

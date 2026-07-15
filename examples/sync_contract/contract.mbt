@@ -16,6 +16,6 @@ pub(all) struct SumResponse {
 
 ///|
 /// The ID is checked when the Worker starts, before shared memory is used.
-pub fn contract() -> @mayo.SyncContract[SumRequest, SumResponse] {
-  @mayo.sync_contract("mayo.example.sum/v1")
+pub fn contract() -> @mayo_json.JsonContract[SumRequest, SumResponse] {
+  @mayo_json.json_contract("mayo.example.sum/v1")
 }

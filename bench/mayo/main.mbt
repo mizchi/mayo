@@ -2,6 +2,7 @@
 priv struct Config {
   workers : Int
   quick : Bool
+  wasm : Bool
 }
 
 ///|
@@ -34,6 +35,7 @@ extern "js" fn parse_config() -> Config =
   #| () => {
   #|   let workers = Math.min(4, navigator.hardwareConcurrency || 1);
   #|   let quick = false;
+  #|   let wasm = false;
   #|   for (let index = 0; index < Deno.args.length; index += 1) {
   #|     switch (Deno.args[index]) {
   #|       case "--workers":
@@ -42,6 +44,9 @@ extern "js" fn parse_config() -> Config =
   #|       case "--quick":
   #|         quick = true;
   #|         break;
+  #|       case "--wasm":
+  #|         wasm = true;
+  #|         break;
   #|       default:
   #|         throw new Error(`unknown argument: ${Deno.args[index]}`);
   #|     }
@@ -49,7 +54,7 @@ extern "js" fn parse_config() -> Config =
   #|   if (!Number.isSafeInteger(workers) || workers < 1) {
   #|     throw new Error("workers must be a positive integer");
   #|   }
-  #|   return { workers: workers | 0, quick };
+  #|   return { workers: workers | 0, quick, wasm };
   #| }
 
 ///|
@@ -71,12 +76,13 @@ extern "js" fn summarize_samples(samples : Array[Double]) -> Timing =
 
 ///|
 extern "js" fn emit_report(
+  backend : String,
   workers : Int,
   dispatch : ScenarioReport,
   memory : ScenarioReport,
   compute : ScenarioReport,
 ) -> Unit =
-  #| (workers, dispatch, memory, compute) => {
+  #| (backend, workers, dispatch, memory, compute) => {
   #|   const scenario = (value) => ({
   #|     elements: value.elements,
   #|     compute_rounds: value.compute_rounds,
@@ -87,7 +93,7 @@ extern "js" fn emit_report(
   #|     checksum: value.checksum >>> 0,
   #|   });
   #|   console.log(JSON.stringify({
-  #|     backend: "mayo",
+  #|     backend,
   #|     workers,
   #|     dispatch: scenario(dispatch),
   #|     memory: scenario(memory),
@@ -153,16 +159,26 @@ fn measure(
 }
 
 ///|
-async fn main {
+async fn run() -> Unit raise @mayo_lib.PoolError {
   let config = parse_config()
   let memory_elements = if config.quick { 262144 } else { 4194304 }
-  let pool = @mayo_lib.Pool::create(
-    @mayo_lib.pool_options(
+  let options = if config.wasm {
+    @mayo_lib.wasm_kernel_pool_options(
+      @mayo_lib.kernel_contract(@wasm_contract.contract_id()),
+      "./mayo_wasm_kernel.js",
+      "./wasm_guest.wasm",
+      capacity=memory_elements,
+      worker_count=config.workers,
+    )
+  } else {
+    @mayo_lib.kernel_pool_options(
+      @mayo_lib.kernel_contract(@wasm_contract.contract_id()),
       "./mayo_worker.js",
       capacity=memory_elements,
       worker_count=config.workers,
-    ),
-  )
+    )
+  }
+  let pool = @mayo_lib.Pool::create(options)
   defer pool.close()
   let values = pool.values()
   let dispatch = measure(pool, values, {
@@ -203,5 +219,36 @@ async fn main {
       20
     },
   })
-  emit_report(config.workers, dispatch, memory, compute)
+  emit_report(
+    if config.wasm {
+      "mayo-wasm"
+    } else {
+      "mayo"
+    },
+    config.workers,
+    dispatch,
+    memory,
+    compute,
+  )
+}
+
+///|
+extern "js" fn fail_benchmark(message : String) -> Unit = "(message) => { console.error(message); Deno.exit(1); }"
+
+///|
+fn pool_error_message(error : @mayo_lib.PoolError) -> String {
+  match error {
+    InvalidArgument(message) => "invalid argument: \{message}"
+    WorkerFailed(message) => "worker failed: \{message}"
+    Timeout(message) => "timeout: \{message}"
+    Closed => "pool closed"
+    Busy => "pool busy"
+  }
+}
+
+///|
+async fn main {
+  run() catch {
+    error => fail_benchmark(pool_error_message(error))
+  }
 }

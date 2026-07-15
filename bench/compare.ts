@@ -1,4 +1,4 @@
-import { type BenchmarkReport, runMayoSuite, runMoonbitSuite } from "./suite.ts";
+import { type BenchmarkReport, runMayoSuite, runMayoWasmSuite, runMoonbitSuite } from "./suite.ts";
 
 interface Config {
   workers: number;
@@ -98,6 +98,7 @@ async function main(): Promise<void> {
   reports.push(await runNative("./dist/rust-bench", "rayon", config));
   reports.push(await runMoonbitSuite({ workerCount: config.workers, quick: config.quick }));
   reports.push(await runMayoSuite({ workerCount: config.workers, quick: config.quick }));
+  reports.push(await runMayoWasmSuite({ workerCount: config.workers, quick: config.quick }));
   validateChecksums(reports);
 
   if (config.json) {

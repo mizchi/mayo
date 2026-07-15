@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 
-import { runMayoSuite, runMoonbitSuite } from "./suite.ts";
+import { runMayoSuite, runMayoWasmSuite, runMoonbitSuite } from "./suite.ts";
 
 interface NativeReport {
   memory: { checksum: number };
@@ -25,6 +25,7 @@ Deno.test("all warm pools produce matching shared-buffer checksums", async () =>
     runNative("./dist/rust-bench", "rayon"),
     runMoonbitSuite({ workerCount: 2, quick: true }),
     runMayoSuite({ workerCount: 2, quick: true }),
+    runMayoWasmSuite({ workerCount: 2, quick: true }),
   ]);
 
   assert.equal(new Set(reports.map((report) => report.memory.checksum)).size, 1);

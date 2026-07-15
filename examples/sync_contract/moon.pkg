@@ -1,5 +1,5 @@
 import {
-  "mizchi/mayo",
+  "mizchi/mayo/json" @mayo_json,
   "moonbitlang/core/json",
 }
 

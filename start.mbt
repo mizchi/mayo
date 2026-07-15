@@ -8,7 +8,10 @@ extern "js" fn install_atomic_worker(
   #|  globalThis.onmessage = (event) => {
   #|    const message = event.data;
   #|    if (message.type !== "atomic-init") return;
-  #|    const shared = new Int32Array(message.shared);
+  #|    const shared = new Int32Array(
+  #|      message.shared,
+  #|      message.controlOffset * Int32Array.BYTES_PER_ELEMENT,
+  #|    );
   #|    globalThis.postMessage({ type: "initialized", id: message.id });
   #|    workerHandler(shared, message.slotBase, message.dataOffset);
   #|  };
@@ -21,7 +24,17 @@ extern "js" fn install_atomic_worker(
 /// The host partitions every dispatched range into non-overlapping chunks.
 /// Compile the executable containing this call before creating a host `Pool`.
 pub fn start(kernel : (SharedSlice, Int, Int, Int) -> Unit) -> Unit {
-  install_atomic_worker(RANGE_PROTOCOL_ID, fn(shared, slot_base, data_offset) {
+  serve(kernel_contract(RANGE_PROTOCOL_ID), kernel)
+}
+
+///|
+/// Installs a JavaScript kernel using an explicit versioned shared-memory
+/// contract. Host and guest are compiled separately and must use the same ID.
+pub fn serve(
+  contract : KernelContract,
+  kernel : (SharedSlice, Int, Int, Int) -> Unit,
+) -> Unit {
+  install_atomic_worker(contract.id_, fn(shared, slot_base, data_offset) {
     run_worker(shared, slot_base, data_offset, kernel)
   })
 }

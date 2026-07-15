@@ -1,4 +1,26 @@
 ///|
+/// A versioned contract shared by separately compiled host and kernel bundles.
+///
+/// The contract describes the layout and meaning of the shared `Int32` data
+/// region. Change its identifier whenever that layout or kernel semantics
+/// changes incompatibly.
+pub struct KernelContract {
+  priv id_ : String
+}
+
+///|
+/// Defines a versioned zero-copy kernel contract.
+pub fn kernel_contract(id : String) -> KernelContract {
+  { id_: id }
+}
+
+///|
+/// Returns the identifier checked during the Worker handshake.
+pub fn KernelContract::id(self : KernelContract) -> String {
+  self.id_
+}
+
+///|
 /// Configuration for creating a persistent Web Worker pool.
 pub struct PoolOptions {
   priv worker_url : String
@@ -6,6 +28,7 @@ pub struct PoolOptions {
   priv capacity : Int
   priv timeout_ms : Int
   priv protocol_id : String
+  priv use_wasm_memory : Bool
 }
 
 ///|
@@ -17,12 +40,53 @@ pub fn pool_options(
   worker_count? : Int = 4,
   timeout_ms? : Int = 30000,
 ) -> PoolOptions {
+  kernel_pool_options(
+    kernel_contract(RANGE_PROTOCOL_ID),
+    worker_url,
+    capacity~,
+    worker_count~,
+    timeout_ms~,
+  )
+}
+
+///|
+/// Builds options for a separately compiled JavaScript kernel.
+pub fn kernel_pool_options(
+  contract : KernelContract,
+  worker_url : String,
+  capacity~ : Int,
+  worker_count? : Int = 4,
+  timeout_ms? : Int = 30000,
+) -> PoolOptions {
   {
     worker_url,
     worker_count,
     capacity,
     timeout_ms,
-    protocol_id: RANGE_PROTOCOL_ID,
+    protocol_id: contract.id_,
+    use_wasm_memory: false,
+  }
+}
+
+///|
+/// Builds options for an allocation-free MoonBit/Wasm kernel using shared
+/// WebAssembly linear memory. The generic JavaScript Worker glue and Wasm
+/// artifact URLs are resolved relative to the generated host module.
+pub fn wasm_kernel_pool_options(
+  contract : KernelContract,
+  worker_url : String,
+  wasm_url : String,
+  capacity~ : Int,
+  worker_count? : Int = 4,
+  timeout_ms? : Int = 30000,
+) -> PoolOptions {
+  {
+    worker_url: wasm_guest_worker_url(worker_url, wasm_url, contract.id_),
+    worker_count,
+    capacity,
+    timeout_ms,
+    protocol_id: contract.id_,
+    use_wasm_memory: true,
   }
 }
 
@@ -98,6 +162,13 @@ fn terminate_workers(workers : Array[HostWorker]) -> Unit {
 }
 
 ///|
+fn wasm_capacity_limit(worker_count : Int) -> Int {
+  WASM_MAX_PAGES * WASM_PAGE_WORDS -
+  WASM_SHARED_BASE_WORDS -
+  worker_count * CONTROL_SLOT_LENGTH
+}
+
+///|
 fn wait_for_value(
   control : SharedInts,
   index : Int,
@@ -164,10 +235,22 @@ pub async fn Pool::create(options : PoolOptions) -> Pool raise PoolError {
   if options.timeout_ms < 1 {
     raise PoolError::InvalidArgument("timeout_ms must be positive")
   }
+  if options.protocol_id.is_empty() {
+    raise PoolError::InvalidArgument("kernel contract id must not be empty")
+  }
+  if options.use_wasm_memory &&
+    options.capacity > wasm_capacity_limit(options.worker_count) {
+    raise PoolError::InvalidArgument(
+      "shared Wasm capacity exceeds the ABI memory limit",
+    )
+  }
   let shared = create_host_shared(
     options.worker_count,
     options.capacity,
     CONTROL_SLOT_LENGTH,
+    options.use_wasm_memory,
+    WASM_SHARED_BASE_WORDS,
+    WASM_MAX_PAGES,
   )
   let workers : Array[HostWorker] = []
   for id = 0; id < options.worker_count; id = id + 1 {
@@ -189,8 +272,11 @@ pub async fn Pool::create(options : PoolOptions) -> Pool raise PoolError {
       workers[id],
       id,
       shared.buffer,
+      shared.memory,
+      shared.control_offset,
       id * CONTROL_SLOT_LENGTH,
       shared.data_offset,
+      options.capacity,
       options.timeout_ms,
     ).wait() catch {
       error => {

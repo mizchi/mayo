@@ -19,5 +19,5 @@ fn mix_range(
 
 ///|
 fn main {
-  @mayo.start(mix_range)
+  @mayo.serve(@mayo.kernel_contract(@contract.contract_id()), mix_range)
 }

@@ -134,6 +134,17 @@ export async function runMoonbitSuite(options: SuiteOptions): Promise<BenchmarkR
 }
 
 export async function runMayoSuite(options: SuiteOptions): Promise<BenchmarkReport> {
+  return await runMayoProcess(options, false);
+}
+
+export async function runMayoWasmSuite(options: SuiteOptions): Promise<BenchmarkReport> {
+  return await runMayoProcess(options, true);
+}
+
+async function runMayoProcess(
+  options: SuiteOptions,
+  wasm: boolean,
+): Promise<BenchmarkReport> {
   const { workerCount, quick = false } = options;
   const args = [
     "run",
@@ -143,6 +154,7 @@ export async function runMayoSuite(options: SuiteOptions): Promise<BenchmarkRepo
     String(workerCount),
   ];
   if (quick) args.push("--quick");
+  if (wasm) args.push("--wasm");
   const output = await new Deno.Command(Deno.execPath(), {
     args,
     stdout: "piped",

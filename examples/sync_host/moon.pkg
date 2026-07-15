@@ -1,5 +1,5 @@
 import {
-  "mizchi/mayo",
+  "mizchi/mayo/json" @mayo_json,
   "mizchi/mayo/examples/sync_contract" @contract,
   "moonbitlang/async",
 }

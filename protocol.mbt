@@ -25,23 +25,11 @@ const CONTROL_STOP : Int = 5
 const RANGE_PROTOCOL_ID : String = "mayo.range/v1"
 
 ///|
-/// Number of Int32 words reserved before a typed mailbox payload.
-const SYNC_MAILBOX_HEADER_WORDS : Int = 4
+/// Shared Wasm scheduler/data begins above MoonBit's static runtime image.
+const WASM_SHARED_BASE_WORDS : Int = 1048576
 
 ///|
-const SYNC_REQUEST_LENGTH : Int = 0
+const WASM_MAX_PAGES : Int = 512
 
 ///|
-const SYNC_RESPONSE_LENGTH : Int = 1
-
-///|
-const SYNC_STATUS : Int = 2
-
-///|
-const SYNC_STATUS_PENDING : Int = 0
-
-///|
-const SYNC_STATUS_OK : Int = 1
-
-///|
-const SYNC_STATUS_ERROR : Int = -1
+const WASM_PAGE_WORDS : Int = 16384

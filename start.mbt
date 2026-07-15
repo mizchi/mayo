@@ -15,7 +15,7 @@ extern "js" fn install_atomic_worker(
   #|}
 
 ///|
-/// Installs a kernel as a Mayo-compatible Deno Worker entry point.
+/// Installs a kernel as a Mayo-compatible Web Worker entry point.
 ///
 /// The host partitions every dispatched range into non-overlapping chunks.
 /// Compile the executable containing this call before creating a host `Pool`.

@@ -1,46 +1,65 @@
 # mayo
 
-MoonBit の JS backend で、事前ビルドした MoonBit kernel を常駐 Deno Worker として実行する、 実験的な
-data-parallel worker pool です。host client と Worker の両方を MoonBit で記述し、 生成された
-JavaScript を Deno で実行します。
+[日本語](./README.ja.md)
 
-データと task descriptor は `SharedArrayBuffer` で共有し、`Atomics.wait` / `notify` で同期します。
-Rust Rayon のように、pool の生成コストを再利用しながら配列処理を並列 dispatch できる API を
-目指しています。現在の scheduler は work stealing ではなく static chunk です。
+Mayo is an experimental data-parallel Worker pool for MoonBit's JavaScript backend. Both the host
+client and Worker kernel are written in MoonBit, compiled ahead of time to JavaScript, and run in a
+modern web browser or Deno.
+
+Data and task descriptors are shared through `SharedArrayBuffer`. Persistent Workers sleep and wake
+through JavaScript Atomics, so Worker startup is amortized across many batches. The long-term goal
+is a Rayon-like MoonBit API; the current scheduler uses static, non-overlapping chunks rather than
+work stealing.
 
 > [!WARNING]
-> 実験的な API です。MoonBit の通常 heap、closure、object は Worker 間で共有しません。
-> 共有できるデータは `Pool::values()` が返す `SharedSlice` と、kernel へ渡す 1 個の `Int` です。
+> Mayo is experimental. MoonBit heap objects, closures, and ordinary objects are not shared across
+> Workers. The current contract shares one `Int32Array`-backed `SharedSlice` and one `Int` argument
+> per dispatch.
 
-## 構成
+## Runtime support
+
+| Host runtime | Pool creation     | Dispatch API                             | Requirement                           |
+| ------------ | ----------------- | ---------------------------------------- | ------------------------------------- |
+| Web document | `Pool::create`    | `Pool::run_async`                        | Cross-origin isolation (COOP + COEP)  |
+| Deno         | `Pool::create`    | `Pool::run` (recommended) or `run_async` | `--allow-read` for local Worker files |
+| Node.js      | Not supported yet | —                                        | A Worker adapter is planned           |
+
+[`Atomics.wait`](https://tc39.es/ecma262/multipage/structured-data.html#sec-atomics.wait) blocks and
+is not permitted on a browser document main thread. Mayo therefore uses
+[`Atomics.waitAsync`](https://tc39.es/ecma262/multipage/structured-data.html#sec-atomics.waitasync)
+for browser dispatch and falls back to timer-based asynchronous polling when the runtime does not
+expose it. Calling synchronous `Pool::run` from a web document raises `PoolError::InvalidArgument`
+with a message directing the caller to `run_async`.
+
+## Architecture
 
 ```text
-MoonBit host client                         MoonBit worker kernel
-  Pool::create / run / close                  @mayo.start(kernel)
+MoonBit host client                         MoonBit Worker kernel
+  Pool::create / run_async                    @mayo.start(kernel)
            │                                           │
-           └──── MoonBit JS backendでコンパイル ───────┘
+           └──── compile with MoonBit JS backend ──────┘
                               │
-                         Deno runtime
+                    Browser or Deno runtime
                               │
                  SharedArrayBuffer (zero-copy)
-                   ├─ worker 0 control slot
-                   ├─ worker 1 control slot
+                   ├─ Worker 0 control slot
+                   ├─ Worker 1 control slot
                    └─ Int32 data region
 ```
 
-各 Worker は常駐し、自分の control slot にある epoch が変わるまで sleep します。`Pool::run` は
-`[start, end)` を重複しない chunk に分け、全 Worker の完了 epoch が揃うまで呼び出し元を
-ブロックします。
+Each Worker sleeps until the epoch in its control slot changes. A dispatch partitions `[start, end)`
+into non-overlapping ranges and completes when every Worker publishes the expected done epoch.
 
-Worker、`SharedArrayBuffer`、`Atomics`、`performance.now()` に触る最小限の runtime 境界だけが
-JavaScript FFI です。pool の検証、range 分割、lifecycle、dispatch は MoonBit で実装しています。
+Only the runtime boundary that touches `Worker`, `SharedArrayBuffer`, Atomics, promises, and
+`performance.now()` is JavaScript FFI. Option validation, range partitioning, lifecycle state, and
+dispatch are implemented in MoonBit.
 
-## 使い方
+## Usage
 
-### 1. MoonBit kernel
+### 1. Write a MoonBit Worker kernel
 
-[`examples/mix_worker/main.mbt`](./examples/mix_worker/main.mbt) は、共有配列の各要素へ LCG 演算を
-指定回数適用するサンプルです。
+[`examples/mix_worker/main.mbt`](./examples/mix_worker/main.mbt) applies an LCG transform to every
+element in the assigned range:
 
 ```moonbit
 fn kernel(
@@ -63,12 +82,12 @@ fn main {
 }
 ```
 
-kernel の `start` と `end` は共有 slice の論理 index です。Worker ごとの範囲は重複しないため、
-`SharedSlice::load` / `store` は意図的に非 atomic access にしています。
+`start` and `end` are logical indices into the shared slice. Worker ranges never overlap, so
+`SharedSlice::load` and `store` intentionally use non-atomic element access.
 
-### 2. MoonBit host client
+### 2. Use Mayo in a web document
 
-[`examples/host/main.mbt`](./examples/host/main.mbt) も MoonBit です。
+[`examples/web/main.mbt`](./examples/web/main.mbt) is a MoonBit browser client:
 
 ```moonbit
 async fn main {
@@ -85,12 +104,56 @@ async fn main {
 
   let values = pool.values()
   values.fill(1)
-  let result = pool.run(end=values.length(), argument=64)
+  let result = pool.run_async(end=values.length(), argument=64)
   println("dispatch: \{result.elapsed_ms} ms")
 }
 ```
 
-host package は async runtime を import します。
+Serve the document and every Worker/subresource with
+[cross-origin isolation](https://html.spec.whatwg.org/multipage/webappapis.html#cross-origin-isolated-capability)
+enabled. A minimal same-origin configuration uses these response headers:
+
+```http
+Cross-Origin-Opener-Policy: same-origin
+Cross-Origin-Embedder-Policy: require-corp
+Cross-Origin-Resource-Policy: same-origin
+```
+
+The repository includes a working server and a browser test:
+
+```console
+pnpm install
+pnpm exec playwright install chromium firefox webkit
+just serve-web   # open http://127.0.0.1:4173
+just test-web    # Chromium, Firefox, and WebKit integration
+```
+
+The Playwright test runs on Chromium, Firefox, and WebKit. It verifies `crossOriginIsolated`, starts
+three prebuilt MoonBit Workers, dispatches two batches through `run_async`, and checks epochs and
+all shared-buffer values.
+
+### 3. Use Mayo in Deno
+
+[`examples/host/main.mbt`](./examples/host/main.mbt) uses the same MoonBit API. Deno permits
+`Atomics.wait` on its main agent, so synchronous `run` gives the lowest dispatch overhead:
+
+```moonbit
+let result = pool.run(end=values.length(), argument=64)
+```
+
+Build and run the Deno example with:
+
+```console
+just example
+```
+
+The Worker URL is resolved relative to the generated host module's `import.meta.url`. Local Worker
+files require Deno's `--allow-read` permission.
+
+### Host package configuration
+
+Browser and Deno clients both import MoonBit's async runtime because `Pool::create` and `run_async`
+are async:
 
 ```moonbit
 import {
@@ -103,82 +166,78 @@ supported_targets = "js"
 pkgtype(kind: "executable")
 ```
 
-このリポジトリでは次のコマンドで host と Worker をコンパイルし、同じ `dist/` に配置します。 Worker
-URL は生成された host module の `import.meta.url` を基準に解決されます。
+## Public API
 
-```console
-just example
-```
-
-`Pool::create` だけが async です。`Pool::run` は Rayon に近い同期 API で、Deno main thread 上の
-`Atomics.wait` を使います。実行時にはローカル Worker を読む `--allow-read` が必要です。
-
-## 公開 API
-
-### MoonBit host
+### Host
 
 - `pool_options(worker_url, capacity~, worker_count?=4, timeout_ms?=30000)`
 - `Pool::create(options)`
 - `Pool::values() -> SharedSlice`
-- `Pool::run(start?=0, end~, argument?=0) -> RunResult`
+- `Pool::run(start?=0, end~, argument?=0) -> RunResult` — blocking Deno API
+- `Pool::run_async(start?=0, end~, argument?=0) -> RunResult` — browser-safe API
 - `Pool::worker_count()` / `Pool::capacity()`
 - `Pool::close()`
 - `PoolError::{InvalidArgument, WorkerFailed, Timeout, Closed, Busy}`
 
-同じ pool では batch を順番に実行します。`start` / `end` は共有領域内で検証されます。
+Only one batch may run on a pool at a time. Ranges are validated against the shared data region.
 
-### MoonBit worker
+### Worker
 
-- `@mayo.start(kernel)` — Mayo Worker protocol を install
-- `@mayo.SharedSlice` — control 領域を隠した共有データ view
+- `@mayo.start(kernel)` — installs the Mayo Worker protocol
+- `@mayo.SharedSlice` — shared data view without the private control region
 - `SharedSlice::length()` / `load(index)` / `store(index, value)` / `fill(value)`
-- `@mayo.run_worker(...)` — 複合 Worker を構築する場合の低レベル entry point
+- `@mayo.run_worker(...)` — low-level entry point for composite Workers
 
-## 現在の制約
+## Current limitations
 
-- データ型は `Int32Array` のみ
-- kernel は事前に Worker 用 JS へコンパイルする必要がある
-- 1 batch で渡せる追加情報は 1 個の `Int`
-- scheduling は static chunk。dynamic chunk と work stealing は未実装
-- `run` 中の cancel、Worker crash recovery、panic 伝播は未実装
-- MoonBit に Rust の `Send` / `Sync` 相当の型検査はない
-- Deno 専用。browser main thread と Node.js は未対応
+- Shared data is limited to an `Int32Array`.
+- Kernels must be compiled ahead of time as Worker modules.
+- A batch carries one additional `Int` argument.
+- Scheduling uses static chunks; dynamic chunks and work stealing are not implemented.
+- In-flight cancellation, Worker crash recovery, and kernel panic propagation are not implemented.
+- MoonBit has no equivalent of Rust's `Send` / `Sync` checking for this boundary.
+- Web pages must be cross-origin isolated; third-party subresources must also satisfy the selected
+  embedder policy.
+- Node.js is not supported yet.
 
-均一な配列処理には static chunk で十分ですが、task ごとの処理時間が不均一な場合や再帰的に task
-が増える場合は work stealing が必要です。
+Static chunks work well for uniform array processing. Uneven or recursively generated tasks will
+need dynamic scheduling and eventually work stealing.
 
-## 開発
+## Development
 
 ```console
-just test          # MoonBit client/Worker・Deno・Rust・C の契約テスト
-just check         # format・lint・型検査・テスト
-just example       # MoonBit host API のサンプル
-just compare 4     # pthread / mmap process / Rust / Rayon と比較
-just bench         # Worker 起動と Mutex 競合の実験
+just test          # MoonBit, Deno, browser, Rust, and C contract tests
+just check         # formatting, linting, type checks, native checks, and tests
+just test-web      # Playwright Chromium / Firefox / WebKit integration
+just serve-web     # COOP/COEP web example server
+just example       # Deno host example
+just compare 4     # pthread / mmap process / Rust / Rayon comparison
+just bench         # Worker startup and contended-mutex experiments
 ```
 
-主なファイルとディレクトリ:
+Repository layout:
 
 ```text
-src/host_client.mbt                  MoonBit host API
-src/host_runtime_js.mbt              Deno JavaScript FFI境界
-src/atomics_js.mbt, mayo.mbt         共有メモリとWorker loop
-src/protocol.mbt, start.mbt          control protocolとWorker entry
-examples/host/                        MoonBit hostサンプル
-examples/mix_worker/                  MoonBit kernelサンプル
-tests/client/                         MoonBit同士の統合テスト
-worker/, bench/                       比較測定用（公開APIではない）
-native/                               C pthread/mmap・Rust std/Rayon比較版
+host_client.mbt, host_runtime_js.mbt  MoonBit host API and JavaScript boundary
+atomics_js.mbt, mayo.mbt              shared memory and Worker loop
+protocol.mbt, start.mbt               control protocol and Worker entry point
+examples/web/                         MoonBit browser client
+examples/host/                        MoonBit Deno client
+examples/mix_worker/                  MoonBit kernel
+tests/web/                            COOP/COEP server and Playwright test
+tests/client/                         MoonBit-to-MoonBit Deno integration test
+worker/, bench/                       internal measurements
+native/                               C pthread/mmap and Rust std/Rayon baselines
 ```
 
-## ベンチマーク
+## Benchmark
 
-`just compare 4` は pool と共有領域を一度だけ作り、各 batch では範囲と演算回数だけを通知します。
-データ本体の copy と pool 生成時間は含みません。Mayo backend の host client も MoonBit であり、
-`bench/mayo/main.mbt` から生成した JS を Deno subprocess として実行します。
+`just compare 4` creates each pool and shared region once. Timed batches only publish a range and
+round count; Worker/process startup and data copying are excluded. Mayo's benchmark host is also
+MoonBit, compiled from `bench/mayo/main.mbt` and executed by Deno.
 
-2026-07-15、Mac17,2 / 32 GiB / 10 logical CPUs / darwin-aarch64、Deno 2.6.4、MoonBit 0.1.20260713 で
-5 回独立実行した中央値です。
+Median of five independent runs on 2026-07-15: Mac17,2, 32 GiB, 10 logical CPUs, darwin-aarch64,
+Deno 2.6.4, MoonBit 0.1.20260713.
 
 | backend         | dispatch p50 | dispatch p95 | memory bandwidth | compute throughput |
 | --------------- | -----------: | -----------: | ---------------: | -----------------: |
@@ -189,26 +248,23 @@ native/                               C pthread/mmap・Rust std/Rayon比較版
 | MoonBit message |      37.8 µs |      59.0 µs |       18.5 GiB/s |        8.54 Gops/s |
 | Mayo            |      9.87 µs |      22.3 µs |       26.1 GiB/s |        8.69 Gops/s |
 
-この実行では Mayo の dispatch p50 は pthread の 0.99 倍、compute throughput は 1.05 倍で、ほぼ同じ
-帯域でした。一方、1 演算/要素の軽い loop では memory bandwidth が pthread の 25.4% です。MoonBit
-生成 JS と V8 の typed array loop が native compiler の vectorized loop に及ばない差が現れます。CPU
-の P/E core 割当、温度、電源状態、runtime version で結果は変わるため、手元の `just compare` を基準に
-してください。全 backend は同じ transform 契約と checksum を検証します。
-
-Worker 起動は通常 6 ms 前後で、事前ビルドした kernel のコード量より Deno Worker / V8 isolate の
-生成が支配的です。Mayo はこの起動コストを常駐 pool で償却します。
+In this run, Mayo's dispatch p50 was 0.99× pthread and compute throughput was 1.05× pthread. The
+single-operation memory case reached 25.4% of pthread bandwidth, where generated JavaScript and V8's
+typed-array loop trail native vectorized loops. Treat local `just compare` results as authoritative;
+core assignment, temperature, power state, and runtime versions materially affect these numbers.
 
 ## Roadmap
 
-1. 複数引数と複数 shared slice を表現する POD descriptor
-2. grain size を調整できる dynamic chunk counter
-3. SAB 上の task ring と sleep/wake
-4. Worker ごとの Chase–Lev deque による work stealing
-5. error、cancel、Worker 終了時の task 回収
-6. `par_for` / `par_chunks` 相当の高レベル API
+1. POD descriptors for multiple arguments and shared slices
+2. Dynamic chunk counters with configurable grain size
+3. A task ring and sleep/wake protocol in shared memory
+4. Per-Worker Chase–Lev deques and work stealing
+5. Error propagation, cancellation, and task recovery
+6. Higher-level `par_for` and `par_chunks` APIs
+7. A Node.js Worker adapter
 
-着想元:
-[Rust/Wasm で shared memory と Mutex を使う実験](https://zenn.dev/grainrigi/articles/b7c2320ef13c71)
+Inspired by
+[an experiment using shared memory and mutexes with Rust/Wasm](https://zenn.dev/grainrigi/articles/b7c2320ef13c71).
 
 ## License
 

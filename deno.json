@@ -1,5 +1,6 @@
 {
   "fmt": {
+    "exclude": ["pnpm-lock.yaml"],
     "lineWidth": 100,
     "semiColons": true,
     "singleQuote": false

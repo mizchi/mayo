@@ -1,5 +1,5 @@
 ///|
-/// Runs the persistent Mayo Worker loop for one host-assigned slot.
+/// Runs a persistent Mayo Worker loop for one host-assigned slot.
 ///
 /// The kernel receives logical indices into `SharedSlice` and one signed
 /// 32-bit, kernel-specific argument.

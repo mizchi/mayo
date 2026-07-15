@@ -6,13 +6,21 @@ import {
   "moonbitlang/async@0.19.2",
 }
 
-source = "src"
+source = "."
 
 readme = "README.md"
 
-keywords = [ "moonbit", "deno", "worker", "parallelism", "shared-memory" ]
+keywords = [
+  "moonbit",
+  "web",
+  "browser",
+  "deno",
+  "worker",
+  "parallelism",
+  "shared-memory",
+]
 
-description = "Persistent Deno Worker pool with a MoonBit host and shared-memory kernels"
+description = "Persistent Web Worker pool for MoonBit with browser and Deno hosts"
 
 license = "MIT"
 

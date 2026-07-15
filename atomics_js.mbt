@@ -1,5 +1,5 @@
 ///|
-/// Opaque control view backed by the host's `SharedArrayBuffer`.
+/// Opaque control view backed by a host `SharedArrayBuffer`.
 #external
 pub type SharedInts
 

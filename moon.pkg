@@ -1,4 +1,4 @@
-// Public mizchi/mayo package.
+// Public mizchi/mayo package for the JavaScript backend.
 import {
   "moonbitlang/async/js_async",
 }

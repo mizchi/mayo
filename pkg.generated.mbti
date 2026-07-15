@@ -25,6 +25,7 @@ pub fn Pool::capacity(Self) -> Int
 pub fn Pool::close(Self) -> Unit
 pub async fn Pool::create(PoolOptions) -> Self raise PoolError
 pub fn Pool::run(Self, end~ : Int, start? : Int, argument? : Int) -> RunResult raise PoolError
+pub async fn Pool::run_async(Self, end~ : Int, start? : Int, argument? : Int) -> RunResult raise PoolError
 pub fn Pool::values(Self) -> SharedSlice
 pub fn Pool::worker_count(Self) -> Int
 

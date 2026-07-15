@@ -1,5 +1,5 @@
 ///|
-/// Configuration for creating a persistent Deno Worker pool.
+/// Configuration for creating a persistent Web Worker pool.
 pub struct PoolOptions {
   priv worker_url : String
   priv worker_count : Int
@@ -27,7 +27,7 @@ pub(all) struct RunResult {
 }
 
 ///|
-/// Errors raised by pool construction and synchronous dispatch.
+/// Errors raised by pool construction and dispatch.
 pub suberror PoolError {
   InvalidArgument(String)
   WorkerFailed(String)
@@ -37,7 +37,7 @@ pub suberror PoolError {
 }
 
 ///|
-/// Persistent Deno Worker pool for prebuilt MoonBit kernels.
+/// Persistent Web Worker pool for prebuilt MoonBit kernels.
 pub struct Pool {
   priv workers : Array[HostWorker]
   priv control : SharedInts
@@ -53,6 +53,13 @@ pub struct Pool {
 priv struct WorkRange {
   start : Int
   end : Int
+}
+
+///|
+/// State captured when a batch is dispatched.
+priv struct PendingRun {
+  epoch : Int
+  started_at : Double
 }
 
 ///|
@@ -105,6 +112,39 @@ fn wait_for_value(
 }
 
 ///|
+async fn wait_for_value_async(
+  control : SharedInts,
+  index : Int,
+  expected : Int,
+  timeout_ms : Int,
+) -> Unit raise PoolError {
+  let completed = atomic_wait_async_timeout(
+    control, index, expected, timeout_ms,
+  ).wait() catch {
+    error => raise PoolError::WorkerFailed(error.to_string())
+  }
+  if !completed {
+    raise PoolError::Timeout("control index \{index} did not reach \{expected}")
+  }
+}
+
+///| Uses blocking initialization on Deno and non-blocking initialization in a
+
+///|
+/// browser document.
+async fn wait_for_worker_ready(
+  control : SharedInts,
+  index : Int,
+  timeout_ms : Int,
+) -> Unit raise PoolError {
+  if is_browser_main_thread() {
+    wait_for_value_async(control, index, -1, timeout_ms)
+  } else {
+    wait_for_value(control, index, -1, timeout_ms)
+  }
+}
+
+///|
 /// Starts and initializes all persistent Workers. Any Worker started before a
 /// construction failure is terminated.
 pub async fn Pool::create(options : PoolOptions) -> Pool raise PoolError {
@@ -149,10 +189,9 @@ pub async fn Pool::create(options : PoolOptions) -> Pool raise PoolError {
     }
   }
   for id = 0; id < workers.length(); id = id + 1 {
-    wait_for_value(
+    wait_for_worker_ready(
       shared.control,
       id * CONTROL_SLOT_LENGTH + CONTROL_DONE_EPOCH,
-      -1,
       options.timeout_ms,
     ) catch {
       error => {
@@ -191,14 +230,13 @@ pub fn Pool::values(self : Pool) -> SharedSlice {
 }
 
 ///|
-/// Runs one statically partitioned batch and blocks until every Worker exits
-/// its assigned range.
-pub fn Pool::run(
+/// Validates and dispatches one statically partitioned batch.
+fn Pool::start_run(
   self : Pool,
   end~ : Int,
   start? : Int = 0,
   argument? : Int = 0,
-) -> RunResult raise PoolError {
+) -> PendingRun raise PoolError {
   if self.closed {
     raise PoolError::Closed
   }
@@ -211,9 +249,6 @@ pub fn Pool::run(
     )
   }
   self.busy = true
-  defer {
-    self.busy = false
-  }
   self.epoch = if self.epoch == 2147483647 { 1 } else { self.epoch + 1 }
   let epoch = self.epoch
   let started_at = performance_now()
@@ -228,15 +263,62 @@ pub fn Pool::run(
     atomic_store(self.control, base + CONTROL_EPOCH, epoch)
     atomic_notify_one(self.control, base + CONTROL_EPOCH)
   }
-  for id = 0; id < workers; id = id + 1 {
+  { epoch, started_at }
+}
+
+///|
+/// Runs one statically partitioned batch synchronously.
+///
+/// Use this on Deno or another JavaScript agent that permits blocking. Browser
+/// document main threads must use `run_async`.
+pub fn Pool::run(
+  self : Pool,
+  end~ : Int,
+  start? : Int = 0,
+  argument? : Int = 0,
+) -> RunResult raise PoolError {
+  if is_browser_main_thread() {
+    raise PoolError::InvalidArgument(
+      "run cannot block a browser main thread; use run_async",
+    )
+  }
+  let pending = self.start_run(end~, start~, argument~)
+  defer {
+    self.busy = false
+  }
+  for id = 0; id < self.workers.length(); id = id + 1 {
     wait_for_value(
       self.control,
       id * CONTROL_SLOT_LENGTH + CONTROL_DONE_EPOCH,
-      epoch,
+      pending.epoch,
       self.timeout_ms,
     )
   }
-  { epoch, elapsed_ms: performance_now() - started_at }
+  { epoch: pending.epoch, elapsed_ms: performance_now() - pending.started_at }
+}
+
+///|
+/// Runs one statically partitioned batch without blocking the calling agent.
+/// This is the host API for browser document main threads.
+pub async fn Pool::run_async(
+  self : Pool,
+  end~ : Int,
+  start? : Int = 0,
+  argument? : Int = 0,
+) -> RunResult raise PoolError {
+  let pending = self.start_run(end~, start~, argument~)
+  defer {
+    self.busy = false
+  }
+  for id = 0; id < self.workers.length(); id = id + 1 {
+    wait_for_value_async(
+      self.control,
+      id * CONTROL_SLOT_LENGTH + CONTROL_DONE_EPOCH,
+      pending.epoch,
+      self.timeout_ms,
+    )
+  }
+  { epoch: pending.epoch, elapsed_ms: performance_now() - pending.started_at }
 }
 
 ///|

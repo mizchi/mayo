@@ -1,5 +1,5 @@
 ///|
-test "static partition covers an uneven range without gaps" {
+test "static partition covers an uneven range without gaps or overlaps" {
   let first = partition_range(2, 15, 0, 3)
   let second = partition_range(2, 15, 1, 3)
   let third = partition_range(2, 15, 2, 3)

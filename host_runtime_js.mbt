@@ -1,5 +1,5 @@
 ///|
-/// Deno Worker handle kept private behind `Pool`.
+/// Web Worker handle kept private behind `Pool`.
 #external
 priv type HostWorker
 
@@ -128,3 +128,39 @@ extern "js" fn atomic_wait_timeout(
   expected : Int,
   timeout_ms : Double,
 ) -> Unit = "(shared, index, expected, timeoutMs) => { Atomics.wait(shared, index, expected, timeoutMs); }"
+
+///|
+/// Whether the current JavaScript agent is a browser document main thread.
+extern "js" fn is_browser_main_thread() -> Bool = "() => typeof document !== 'undefined'"
+
+///| Non-blocking wait for browser main threads, with a timer fallback for
+
+///|
+/// runtimes that do not expose `Atomics.waitAsync`.
+#borrow(shared)
+extern "js" fn atomic_wait_async_timeout(
+  shared : SharedInts,
+  index : Int,
+  expected : Int,
+  timeout_ms : Int,
+) -> @js_async.Promise[Bool] =
+  #| async (shared, index, expected, timeoutMs) => {
+  #|   const deadline = performance.now() + timeoutMs;
+  #|   const useWaitAsync = typeof document !== "undefined" &&
+  #|     typeof Atomics.waitAsync === "function";
+  #|   while (Atomics.load(shared, index) !== expected) {
+  #|     const remaining = deadline - performance.now();
+  #|     if (remaining <= 0) return false;
+  #|     const current = Atomics.load(shared, index);
+  #|     if (useWaitAsync) {
+  #|       const wait = Atomics.waitAsync(shared, index, current, remaining);
+  #|       const outcome = wait.async ? await wait.value : wait.value;
+  #|       if (outcome === "timed-out" && Atomics.load(shared, index) !== expected) {
+  #|         return false;
+  #|       }
+  #|     } else {
+  #|       await new Promise((resolve) => setTimeout(resolve, Math.min(remaining, 1)));
+  #|     }
+  #|   }
+  #|   return true;
+  #| }

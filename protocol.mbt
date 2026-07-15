@@ -1,5 +1,5 @@
 ///|
-/// Shared control-slot layout used by both host and Worker runtime.
+/// Shared control-slot layout used by the host and Worker runtime.
 const CONTROL_SLOT_LENGTH : Int = 16
 
 ///|

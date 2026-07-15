@@ -10,6 +10,7 @@ const budget: PerformanceBudget = {
   max_dispatch_vs_pthread: 5,
   min_memory_vs_pthread: 0.25,
   min_compute_vs_rayon: 0.2,
+  min_wasm_compute_vs_rayon: 0.2,
 };
 
 function scenario(
@@ -52,6 +53,22 @@ Deno.test("performance gate accepts portable in-run ratios", () => {
     report("mayo", 40, 100, 10, 1_000),
     report("mayo-wasm", 30, 80, 12, 1_500),
   ], budget);
+
+  assert.deepEqual(failures, []);
+});
+
+Deno.test("performance gate supports a separate Wasm compute floor", () => {
+  const backendBudget = {
+    ...budget,
+    min_compute_vs_rayon: 0.1,
+    min_wasm_compute_vs_rayon: 0.05,
+  };
+  const failures = evaluatePerformance([
+    report("c-pthread", 10, 20, 20, 1_000),
+    report("rust-rayon", 20, 40, 18, 2_000),
+    report("mayo", 40, 100, 10, 220),
+    report("mayo-wasm", 30, 80, 12, 120),
+  ], backendBudget);
 
   assert.deepEqual(failures, []);
 });

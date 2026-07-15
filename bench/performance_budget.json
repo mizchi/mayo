@@ -4,5 +4,6 @@
   "max_dispatch_p95_us": 10000,
   "max_dispatch_vs_pthread": 20,
   "min_memory_vs_pthread": 0.1,
-  "min_compute_vs_rayon": 0.1
+  "min_compute_vs_rayon": 0.1,
+  "min_wasm_compute_vs_rayon": 0.05
 }

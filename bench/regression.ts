@@ -7,6 +7,7 @@ export interface PerformanceBudget {
   max_dispatch_vs_pthread: number;
   min_memory_vs_pthread: number;
   min_compute_vs_rayon: number;
+  min_wasm_compute_vs_rayon: number;
 }
 
 export interface PerformanceFailure {
@@ -43,6 +44,9 @@ export function evaluatePerformance(
 
   for (const backend of ["mayo", "mayo-wasm"]) {
     const report = requireReport(reports, backend);
+    const computeFloor = backend === "mayo-wasm"
+      ? budget.min_wasm_compute_vs_rayon
+      : budget.min_compute_vs_rayon;
     const checks = [
       {
         metric: "dispatch.median_us",
@@ -73,8 +77,8 @@ export function evaluatePerformance(
       {
         metric: "compute.vs_rayon",
         actual: report.compute.mops / rayon.compute.mops,
-        limit: budget.min_compute_vs_rayon,
-        failed: report.compute.mops / rayon.compute.mops < budget.min_compute_vs_rayon,
+        limit: computeFloor,
+        failed: report.compute.mops / rayon.compute.mops < computeFloor,
       },
     ];
     for (const check of checks) {

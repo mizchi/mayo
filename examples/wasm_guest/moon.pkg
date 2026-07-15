@@ -13,6 +13,7 @@ options(
       "exports": [ "mayo_abi_version", "mayo_contract_hash", "mayo_run" ],
       "import-memory": { "module": "env", "name": "memory" },
       "memory-limits": { "min": 64, "max": 512 },
+      "shared-memory": true,
       "heap-start-address": 3145728,
     },
   },

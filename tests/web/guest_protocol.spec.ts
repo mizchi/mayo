@@ -20,6 +20,11 @@ test("optional JSON guest completes one raw dispatch", async ({ page }) => {
       worker.addEventListener("error", (event) => reject(event.error ?? new Error(event.message)));
       worker.postMessage({ type: "atomic-init", id: 0, shared: buffer, slotBase: 0, dataOffset });
     });
+    const readyDeadline = performance.now() + 5_000;
+    while (Atomics.load(shared, 1) !== -1) {
+      if (performance.now() >= readyDeadline) throw new Error("JSON guest ready timed out");
+      await new Promise((resolve) => setTimeout(resolve, 1));
+    }
     const request = new TextEncoder().encode(
       JSON.stringify({ name: "Raw", values: [3, 5, 8], scale: 4 }),
     );

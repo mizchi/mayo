@@ -1,5 +1,17 @@
 ///|
-extern "js" fn fail_wasm_test() -> Unit = "() => { console.error('MoonBit Wasm shared kernel: failed'); Deno.exit(1); }"
+extern "js" fn fail_wasm_test(message : String) -> Unit = "(message) => { console.error(`MoonBit Wasm shared kernel: failed: ${message}`); if (globalThis.Deno) Deno.exit(1); else if (globalThis.process) process.exitCode = 1; }"
+
+///|
+fn pool_error_message(error : @mayo.PoolError) -> String {
+  match error {
+    InvalidArgument(message) => "invalid argument: \{message}"
+    WorkerFailed(message) => "worker failed: \{message}"
+    Timeout(message) => "timeout: \{message}"
+    Closed => "closed"
+    Busy => "busy"
+    Cancelled => "cancelled"
+  }
+}
 
 ///|
 extern "js" fn mix(value : Int) -> Int = "(value) => (Math.imul(value, 1664525) + 1013904223) | 0"
@@ -81,6 +93,6 @@ async fn run_wasm_test() -> Unit raise @mayo.PoolError {
 ///|
 async fn main {
   run_wasm_test() catch {
-    _ => fail_wasm_test()
+    error => fail_wasm_test(pool_error_message(error))
   }
 }

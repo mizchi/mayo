@@ -15,15 +15,39 @@ keywords = [
   "web",
   "browser",
   "deno",
+  "node",
+  "bun",
+  "wasm",
+  "atomics",
   "worker",
   "parallelism",
   "shared-memory",
 ]
 
-description = "Persistent Web Worker pool for MoonBit with browser and Deno hosts"
+description = "Zero-copy data-parallel Worker pool for MoonBit on Web, Deno, Node, and Bun"
 
 license = "MIT"
 
 repository = "https://github.com/mizchi/mayo"
 
 preferred_target = "js"
+
+options(
+  exclude: [
+    ".github",
+    "bench",
+    "examples",
+    "native",
+    "src",
+    "tests",
+    "tools",
+    "worker",
+    "deno.json",
+    "host_client_wbtest.mbt",
+    "justfile",
+    "mayo.build.json",
+    "package.json",
+    "playwright.config.ts",
+    "pnpm-lock.yaml",
+  ],
+)

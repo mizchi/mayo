@@ -1,11 +1,17 @@
 const moduleUrl = new URL(import.meta.url);
-const contractId = moduleUrl.searchParams.get("mayo-contract");
-const wasmPath = moduleUrl.searchParams.get("mayo-wasm");
+let contractId = moduleUrl.searchParams.get("mayo-contract");
+let wasmPath = moduleUrl.searchParams.get("mayo-wasm");
 
 async function instantiateWasm(url, memory) {
   const imports = { env: { memory } };
-  if (url.protocol === "file:" && typeof Deno !== "undefined") {
-    return await WebAssembly.instantiate(await Deno.readFile(url), imports);
+  if (url.protocol === "file:") {
+    if (typeof Deno !== "undefined") {
+      return await WebAssembly.instantiate(await Deno.readFile(url), imports);
+    }
+    if (typeof globalThis.process !== "undefined") {
+      const { readFile } = await import("node:fs/promises");
+      return await WebAssembly.instantiate(await readFile(url), imports);
+    }
   }
   const response = await fetch(url);
   if (!response.ok) throw new Error(`failed to fetch Wasm kernel: ${response.status}`);
@@ -73,24 +79,46 @@ function runWorker(message, run) {
     const start = Atomics.load(shared, message.slotBase + 2);
     const end = Atomics.load(shared, message.slotBase + 3);
     const argument = Atomics.load(shared, message.slotBase + 4);
-    const status = run(
-      message.dataOffset,
-      message.dataCapacity,
-      start,
-      end,
-      argument,
+    const startedAt = performance.now();
+    let status;
+    try {
+      status = run(
+        message.dataOffset,
+        message.dataCapacity,
+        start,
+        end,
+        argument,
+      );
+    } catch (error) {
+      Atomics.store(shared, message.slotBase + 8, -3);
+      Atomics.store(shared, message.slotBase + 1, seenEpoch);
+      Atomics.notify(shared, message.slotBase + 1, 1);
+      globalThis.postMessage({
+        type: "runtime-error",
+        message: error instanceof Error ? error.message : String(error),
+      });
+      return;
+    }
+    Atomics.store(shared, message.slotBase + 8, status);
+    Atomics.store(
+      shared,
+      message.slotBase + 14,
+      Math.max(1, Math.trunc((performance.now() - startedAt) * 1000)),
     );
-    if (status !== 0) throw new Error(`Wasm kernel rejected descriptor: ${status}`);
     Atomics.store(shared, message.slotBase + 1, seenEpoch);
     Atomics.notify(shared, message.slotBase + 1, 1);
+    if (status !== 0) return;
   }
 }
 
-if (!contractId) throw new Error("missing mayo-contract Worker parameter");
-if (!wasmPath) throw new Error("missing mayo-wasm Worker parameter");
-
 globalThis.onmessage = async (event) => {
   const message = event.data;
+  if (message.type === "mayo-wasm-bootstrap") {
+    contractId = message.contractId;
+    wasmPath = message.wasmUrl;
+    globalThis.postMessage({ type: "online", protocol: contractId });
+    return;
+  }
   if (message.type !== "atomic-init") return;
   try {
     const run = await initializeKernel(message);
@@ -103,4 +131,6 @@ globalThis.onmessage = async (event) => {
   }
 };
 
-globalThis.postMessage({ type: "online", protocol: contractId });
+if (contractId && wasmPath) {
+  globalThis.postMessage({ type: "online", protocol: contractId });
+}

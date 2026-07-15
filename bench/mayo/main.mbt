@@ -3,6 +3,11 @@ priv struct Config {
   workers : Int
   quick : Bool
   wasm : Bool
+  custom : Bool
+  elements : Int
+  compute_rounds : Int
+  warmups : Int
+  batches : Int
 }
 
 ///|
@@ -36,6 +41,11 @@ extern "js" fn parse_config() -> Config =
   #|   let workers = Math.min(4, navigator.hardwareConcurrency || 1);
   #|   let quick = false;
   #|   let wasm = false;
+  #|   let custom = false;
+  #|   let elements = 0;
+  #|   let compute_rounds = 0;
+  #|   let warmups = 3;
+  #|   let batches = 10;
   #|   for (let index = 0; index < Deno.args.length; index += 1) {
   #|     switch (Deno.args[index]) {
   #|       case "--workers":
@@ -47,6 +57,19 @@ extern "js" fn parse_config() -> Config =
   #|       case "--wasm":
   #|         wasm = true;
   #|         break;
+  #|       case "--elements":
+  #|         elements = Number(Deno.args[++index]);
+  #|         custom = true;
+  #|         break;
+  #|       case "--rounds":
+  #|         compute_rounds = Number(Deno.args[++index]);
+  #|         break;
+  #|       case "--warmups":
+  #|         warmups = Number(Deno.args[++index]);
+  #|         break;
+  #|       case "--batches":
+  #|         batches = Number(Deno.args[++index]);
+  #|         break;
   #|       default:
   #|         throw new Error(`unknown argument: ${Deno.args[index]}`);
   #|     }
@@ -54,7 +77,23 @@ extern "js" fn parse_config() -> Config =
   #|   if (!Number.isSafeInteger(workers) || workers < 1) {
   #|     throw new Error("workers must be a positive integer");
   #|   }
-  #|   return { workers: workers | 0, quick, wasm };
+  #|   if (![elements, compute_rounds, warmups].every(Number.isSafeInteger) ||
+  #|       elements < 0 || compute_rounds < 0 || warmups < 0) {
+  #|     throw new Error("scenario values must be non-negative integers");
+  #|   }
+  #|   if (!Number.isSafeInteger(batches) || batches < 1) {
+  #|     throw new Error("batches must be a positive integer");
+  #|   }
+  #|   return {
+  #|     workers: workers | 0,
+  #|     quick,
+  #|     wasm,
+  #|     custom,
+  #|     elements: elements | 0,
+  #|     compute_rounds: compute_rounds | 0,
+  #|     warmups: warmups | 0,
+  #|     batches: batches | 0,
+  #|   };
   #| }
 
 ///|
@@ -98,6 +137,28 @@ extern "js" fn emit_report(
   #|     dispatch: scenario(dispatch),
   #|     memory: scenario(memory),
   #|     compute: scenario(compute),
+  #|   }));
+  #| }
+
+///|
+extern "js" fn emit_scenario_report(
+  backend : String,
+  workers : Int,
+  report : ScenarioReport,
+) -> Unit =
+  #| (backend, workers, value) => {
+  #|   console.log(JSON.stringify({
+  #|     backend,
+  #|     workers,
+  #|     scenario: {
+  #|       elements: value.elements,
+  #|       compute_rounds: value.compute_rounds,
+  #|       median_us: value.median_us,
+  #|       p95_us: value.p95_us,
+  #|       gib_per_s: value.gib_per_s,
+  #|       mops: value.mops,
+  #|       checksum: value.checksum >>> 0,
+  #|     },
   #|   }));
   #| }
 
@@ -179,25 +240,49 @@ fn measure(
 async fn run() -> Unit raise @mayo_lib.PoolError {
   let config = parse_config()
   let memory_elements = if config.quick { 262144 } else { 4194304 }
+  let capacity = if config.custom { config.elements } else { memory_elements }
   let options = if config.wasm {
     @mayo_lib.wasm_kernel_pool_options(
       @mayo_lib.kernel_contract(@wasm_contract.contract_id()),
       "./mayo_wasm_kernel.js",
       "./wasm_guest.wasm",
-      capacity=memory_elements,
+      capacity~,
       worker_count=config.workers,
     )
   } else {
     @mayo_lib.kernel_manifest_pool_options(
       @kernel.manifest(),
       "./mayo_worker.js",
-      capacity=memory_elements,
+      capacity~,
       worker_count=config.workers,
     )
   }
   let pool = @mayo_lib.Pool::create(options)
   defer pool.close()
   let values = pool.values()
+  if config.custom {
+    let scenario = measure(
+      pool,
+      values,
+      {
+        elements: config.elements,
+        compute_rounds: config.compute_rounds,
+        warmups: config.warmups,
+        batches: config.batches,
+      },
+      config.wasm,
+    )
+    emit_scenario_report(
+      if config.wasm {
+        "mayo-wasm"
+      } else {
+        "mayo"
+      },
+      config.workers,
+      scenario,
+    )
+    return
+  }
   let dispatch = measure(
     pool,
     values,
@@ -275,6 +360,7 @@ fn pool_error_message(error : @mayo_lib.PoolError) -> String {
     Timeout(message) => "timeout: \{message}"
     Closed => "pool closed"
     Busy => "pool busy"
+    Cancelled => "dispatch cancelled"
   }
 }
 

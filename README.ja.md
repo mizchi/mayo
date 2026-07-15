@@ -4,65 +4,18 @@
 
 MayoはRayonに着想を得た、MoonBit向けの実験的なzero-copyデータ並列Worker poolです。
 
-- MoonBit/JS製Hostと事前ビルドWorker
-- shared `WebAssembly.Memory`上で動くMoonBit/Wasm kernel
-- Denoとcross-origin isolatedなWeb page
-- JavaScript Atomicsで同期する常駐Worker
+- MoonBit Hostと事前ビルドしたMoonBit/JSまたはMoonBit/Wasm kernel
+- `SharedArrayBuffer`とAtomicsで同期する常駐Worker
+- Deno、Web、Node.js、Bun
+- static/dynamic scheduling、reduce、structured concurrency、recovery
 
-bulk dataはshared `Int32` memoryに残し、dispatchではkernel ID、range、1つの`Int` argumentだけを
-通知します。
+共有するのはMoonBit heap objectではなく、明示的な`Int32` memoryです。dispatchで渡すのはkernel
+descriptor、半開range、1つの`Int` argumentだけです。JSONはprimary APIに含めません。
 
-> [!WARNING]
-> MoonBit heap object、closure、String、通常のArrayは共有しません。構造化dataはshared memory内の
-> offsetとlengthで明示的に表現します。
+## 最小のHost
 
-## Example
-
-HostとWorkerの両方がimportするdescriptor packageを定義します。
-
-```moonbit
-fn scale_spec() -> @mayo.KernelSpec {
-  @mayo.kernel_spec(id=1, layout_hash=0x5343414C)
-}
-
-pub fn manifest() -> @mayo.KernelManifest {
-  @mayo.kernel_manifest("my-app/kernels/v1", [scale_spec()])
-}
-
-pub fn scale(factor~ : Int) -> @mayo.KernelCall {
-  @mayo.kernel_call(manifest(), scale_spec(), argument=factor)
-}
-
-pub fn scale_entry(
-  implementation : (@mayo.SharedSlice, Int, Int, Int) -> Unit,
-) -> @mayo.KernelEntry {
-  @mayo.kernel_entry(scale_spec(), implementation)
-}
-```
-
-Workerを事前コンパイルします。
-
-```moonbit
-fn scale_range(
-  values : @mayo.SharedSlice,
-  start : Int,
-  end : Int,
-  factor : Int,
-) {
-  for index = start; index < end; index = index + 1 {
-    values.store(index, values.load(index) * factor)
-  }
-}
-
-fn main {
-  @mayo.serve_kernels(
-    @kernels.manifest(),
-    [@kernels.scale_entry(scale_range)],
-  )
-}
-```
-
-MoonBit製Hostからpoolを開き、kernelをdispatchします。
+HostとWorkerは同じdescriptor packageをimportします。descriptorはMoonBitで手書きするか、
+[`mayo.kernel.json`](./examples/mix_kernel/mayo.kernel.json)から生成できます。
 
 ```moonbit
 async fn main {
@@ -76,71 +29,83 @@ async fn main {
 
   let values = threads.shared_i32()
   values.fill(2)
-  let result = values.par_for(@kernels.scale(factor=3))
-  println("dispatch: \{result.elapsed_ms} ms")
+  let mapped = values.par_chunks(@kernels.scale(factor=3)) // grain自動調整
+  let sum = values.par_reduce(
+    @kernels.sum(),
+    init=0,
+    combine=fn(left, right) { left + right },
+  )
+  println("dispatch \{mapped.elapsed_ms} ms; sum \{sum.value}")
 }
 ```
 
-HostとWorkerのmanifest、kernel ID、layout hashが異なる場合は起動またはdispatch時に失敗します。
+別途コンパイルするWorkerは、同じmanifestへ実装をbindします。
 
-## Image pipeline example
-
-実用例ではshared 640x360 RGB frameにgrayscale変換とSobel edge detectionを適用します。中間画像も
-2つ目のshared-memory planeに残します。
-
-```console
-just example-image
+```moonbit
+fn main {
+  @mayo.serve_kernels(@kernels.manifest(), [
+    @kernels.scale_entry(scale_range),
+    @kernels.sum_entry(sum_range),
+  ])
+}
 ```
 
-共有する[image contract](./examples/image_pipeline/pipeline.mbt)、
-[Worker kernel](./examples/image_worker/main.mbt)、[MoonBit Host](./examples/image_host/main.mbt)を参照してください。
+`just build-kernel`では[`mayo.build.json`](./mayo.build.json)に従い、descriptor生成から事前ビルド
+artifact配置までを実行します。manifest ID、kernel ID、layout hash、kernel
+kindが一致しなければ起動時に 拒否します。
 
-structured concurrencyは実行可能な[scope example](./examples/scope_host)または
-`just example-scope`を参照してください。
+## データ並列API
 
-## Runtime support
+- `par_for`: throughputで重み付けしたstatic range
+- `par_chunks`: dynamic work sharing。`grain`省略時は実測から自動調整
+- `par_reduce`: Worker-local partialをWorker ID順に決定的にcombine
+- `SharedArena`: 重複しないPOD layoutとWorker別scratch region。Guest kernelは
+  `SharedSlice::worker_id`で自分のstable indexを取得
+- `SharedRegion`: `par_map_in_place`、`par_for_each`、`par_zip`、`par_pipeline`
+- `ThreadPool::scope`: `moonbitlang/async`を再利用したFIFO task
+- `RecoveryPolicy::RestartWorkers`: shared dataを保ったまま失敗Workerを再生成
 
-| Runtime | Status | 必要条件                              |
-| ------- | ------ | ------------------------------------- |
-| Deno    | 対応   | local Worker fileへの`--allow-read`   |
-| Web     | 対応   | COOP/COEPによるcross-origin isolation |
-| Node.js | 未対応 | Worker adapterを予定                  |
+生成layoutは構造体をshared arena内の検査付きoffset/lengthとして表します。String、closure、通常の
+Array、任意のobject graphは意図的にcontract外です。
 
-JavaScript Workerは`mayo.kernel/v1` manifest ABIを使います。Wasm kernelは低レベルshared-memory
-APIを使います。[Wasm example](./examples/wasm_host/main.mbt)を参照してください。
+## 対応runtime
 
-JSON RPCは[`json`](./json)以下のoptional compatibility packageだけで提供します。zero-copy APIには
-含めません。
+| Runtime     | 状態 | local実行の要件                       |
+| ----------- | ---- | ------------------------------------- |
+| Deno        | 対応 | Worker/Wasm fileへの`--allow-read`    |
+| Web         | 対応 | COOP/COEPによるcross-origin isolation |
+| Node.js 24+ | 対応 | 組み込み`worker_threads` adapter      |
+| Bun         | 対応 | shared Wasmを含むWeb Worker adapter   |
 
-## 現在の制約
+runtime glueはJavaScriptですが、Host client、descriptor、kernelはMoonBitです。browser testは
+Chromium、Firefox、WebKitを、Node/Bun integration testはJS guestとshared Wasm
+guestの両方を検証します。
 
-- shared application dataは現在`Int32`のみ
-- descriptor packageは手書き
-- 1 dispatchは1 rangeと追加の`Int` argumentを持つ
-- schedulerはstatic chunk。work stealingは未実装
-- cancel、Worker recovery、kernel panic propagationは未実装
-- Wasm kernelはallocation-freeとし、MoonBit heapを共有できない
-- Web pageはcross-origin isolatedである必要がある
-
-## 開発
+## Exampleとbenchmark
 
 ```console
-just check          # 全checkとtest
-just example        # MoonBit/JS Deno example
-just example-scope  # structured concurrency
-just example-image  # shared RGB image pipeline
-just example-wasm   # MoonBit/JS Host + MoonBit/Wasm kernel
-just serve-web      # COOP/COEP付きWeb example
-just compare 4      # pthread、mmap process、Rust、Rayon、Mayo
+just example-image          # shared 640x360 grayscale + Sobel pipeline
+just example-scope          # structured concurrency
+just example-wasm           # MoonBit/JS Host + shared MoonBit/Wasm kernel
+just serve-web              # cross-origin isolatedなbrowser example
+just compare 4              # pthread、mmap process、Rust、Rayon、Mayo
+just break-even 4           # workload別break-even matrix
+just performance-regression # portableなCI性能budget
+just release-check
 ```
 
-browser suiteはChromium、Firefox、WebKitで実行します。
+開発machineでの常駐pool dispatchは通常数十µsです。常駐`mmap`
+processは起動コストを償却するとpthreadに 近づきます。Mayoは1
+dispatchあたりのmemory処理または計算量が十分な場合に有効です。詳細は
+[benchmark notes](./docs/benchmarks.ja.md)を参照してください。
 
-## Documentation
+## Contract
 
-- [Kernel ABI v1 日本語版](./docs/kernel-abi-v1.ja.md)
-- [Kernel ABI v1 English](./docs/kernel-abi-v1.md)
+- [Kernel ABI v4 日本語版](./docs/kernel-abi-v4.ja.md)
+- [real-world image pipeline](./examples/image_pipeline/pipeline.mbt)
 - [benchmark source](./bench)
+
+optionalな[`json`](./json) compatibility packageはzero-copy APIとは分離しています。
 
 着想元:
 [Rust/Wasmでshared memoryとMutexを使う実験](https://zenn.dev/grainrigi/articles/b7c2320ef13c71)

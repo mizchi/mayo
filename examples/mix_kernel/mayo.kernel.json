@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "manifest": "mayo.example.i32-kernels/v2",
+  "kernels": [
+    {
+      "name": "mix",
+      "id": 1,
+      "argument": "rounds"
+    },
+    {
+      "name": "add",
+      "id": 2,
+      "argument": "delta"
+    },
+    {
+      "name": "fail",
+      "id": 3
+    },
+    {
+      "name": "sum",
+      "id": 4,
+      "kind": "reduce"
+    },
+    {
+      "name": "zip_add",
+      "id": 5,
+      "argument": "right_delta"
+    },
+    {
+      "name": "write_worker_id",
+      "id": 6,
+      "argument": "scratch_base"
+    }
+  ]
+}

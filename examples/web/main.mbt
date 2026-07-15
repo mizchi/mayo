@@ -40,14 +40,18 @@ async fn main {
   }
   let first = values.par_for(@kernel.mix(rounds=2), start=2, end=15)
   let second = values.par_for(@kernel.add(delta=1))
-  if first.epoch != 1 || second.epoch != 2 {
+  let dynamic = values.par_chunks(@kernel.add(delta=2))
+  if first.epoch != 1 || second.epoch != 2 || dynamic.epoch != 3 {
     abort("unexpected Mayo epoch")
+  }
+  if dynamic.grain <= 0 {
+    abort("Web auto grain was not selected")
   }
   for index = 0; index < values.length(); index = index + 1 {
     let expected = if index >= 2 && index < 15 {
-      mix_rounds(index, 2) + 1
+      mix_rounds(index, 2) + 3
     } else {
-      index + 1
+      index + 3
     }
     if values.load(index) != expected {
       abort("Mayo Web transform mismatch at index \{index}")
@@ -58,7 +62,7 @@ async fn main {
     let second_task = scope.spawn(@kernel.noop(), end=0)
     (first_task.join(), second_task.join())
   })
-  if queued_first.epoch != 3 || queued_second.epoch != 4 {
+  if queued_first.epoch != 4 || queued_second.epoch != 5 {
     abort("concurrent Web dispatches were not queued in FIFO order")
   }
   threads.close()

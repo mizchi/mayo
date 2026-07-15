@@ -303,11 +303,22 @@ enum Backend {
     Rayon,
 }
 
+fn create_pool(backend: Backend, worker_count: usize, max_elements: usize) -> Box<dyn BenchPool> {
+    match backend {
+        Backend::Std => Box::new(StdPool::new(worker_count, max_elements)),
+        Backend::Rayon => Box::new(RayonPool::new(worker_count, max_elements)),
+    }
+}
+
+fn backend_name(backend: Backend) -> &'static str {
+    match backend {
+        Backend::Std => "rust-std",
+        Backend::Rayon => "rust-rayon",
+    }
+}
+
 fn self_test(backend: Backend) {
-    let mut pool: Box<dyn BenchPool> = match backend {
-        Backend::Std => Box::new(StdPool::new(3, 17)),
-        Backend::Rayon => Box::new(RayonPool::new(3, 17)),
-    };
+    let mut pool = create_pool(backend, 3, 17);
     pool.initialize(17);
     let expected: Vec<u32> = (0..17)
         .map(|index| mix_value(initial_value(index), 4))
@@ -343,10 +354,7 @@ fn run_suite(backend: Backend, worker_count: usize, quick: bool) {
     let compute_rounds = if quick { 16 } else { 64 };
     let compute_batches = if quick { 3 } else { 20 };
     let dispatch_batches = if quick { 100 } else { 5000 };
-    let mut pool: Box<dyn BenchPool> = match backend {
-        Backend::Std => Box::new(StdPool::new(worker_count, memory_elements)),
-        Backend::Rayon => Box::new(RayonPool::new(worker_count, memory_elements)),
-    };
+    let mut pool = create_pool(backend, worker_count, memory_elements);
     let dispatch = measure_scenario(pool.as_mut(), 0, 0, 20, dispatch_batches);
     let memory = measure_scenario(pool.as_mut(), memory_elements, 1, 5, memory_batches);
     let compute = measure_scenario(
@@ -356,10 +364,7 @@ fn run_suite(backend: Backend, worker_count: usize, quick: bool) {
         3,
         compute_batches,
     );
-    let name = match backend {
-        Backend::Std => "rust-std",
-        Backend::Rayon => "rust-rayon",
-    };
+    let name = backend_name(backend);
     print!("{{\"backend\":\"{name}\",\"workers\":{worker_count},");
     print_scenario("dispatch", &dispatch, 0, 0);
     print!(",");
@@ -369,11 +374,31 @@ fn run_suite(backend: Backend, worker_count: usize, quick: bool) {
     println!("}}");
 }
 
+fn run_custom(
+    backend: Backend,
+    worker_count: usize,
+    elements: usize,
+    compute_rounds: u32,
+    warmups: usize,
+    batches: usize,
+) {
+    let mut pool = create_pool(backend, worker_count, elements);
+    let scenario = measure_scenario(pool.as_mut(), elements, compute_rounds, warmups, batches);
+    let name = backend_name(backend);
+    print!("{{\"backend\":\"{name}\",\"workers\":{worker_count},");
+    print_scenario("scenario", &scenario, elements, compute_rounds);
+    println!("}}");
+}
+
 fn main() {
     let mut backend = Backend::Std;
     let mut workers = 4;
     let mut run_self_test = false;
     let mut quick = false;
+    let mut custom_elements = None;
+    let mut custom_rounds = 0;
+    let mut custom_warmups = 3;
+    let mut custom_batches = 10;
     let args: Vec<String> = env::args().skip(1).collect();
     let mut index = 0;
     while index < args.len() {
@@ -397,12 +422,55 @@ fn main() {
             }
             "--self-test" => run_self_test = true,
             "--quick" => quick = true,
+            "--elements" => {
+                index += 1;
+                custom_elements = Some(
+                    args.get(index)
+                        .expect("--elements requires a value")
+                        .parse()
+                        .expect("elements must be a non-negative integer"),
+                );
+            }
+            "--rounds" => {
+                index += 1;
+                custom_rounds = args
+                    .get(index)
+                    .expect("--rounds requires a value")
+                    .parse()
+                    .expect("rounds must be a non-negative integer");
+            }
+            "--warmups" => {
+                index += 1;
+                custom_warmups = args
+                    .get(index)
+                    .expect("--warmups requires a value")
+                    .parse()
+                    .expect("warmups must be a non-negative integer");
+            }
+            "--batches" => {
+                index += 1;
+                custom_batches = args
+                    .get(index)
+                    .expect("--batches requires a value")
+                    .parse()
+                    .expect("batches must be a positive integer");
+                assert!(custom_batches > 0, "batches must be positive");
+            }
             argument => panic!("unknown argument: {argument}"),
         }
         index += 1;
     }
     if run_self_test {
         self_test(backend);
+    } else if let Some(elements) = custom_elements {
+        run_custom(
+            backend,
+            workers,
+            elements,
+            custom_rounds,
+            custom_warmups,
+            custom_batches,
+        );
     } else {
         run_suite(backend, workers, quick);
     }

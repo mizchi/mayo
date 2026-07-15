@@ -2,9 +2,10 @@
 #owned(worker_handler)
 extern "js" fn install_atomic_worker(
   protocol_id : String,
+  runtime_failed_status : Int,
   worker_handler : (SharedInts, Int, Int) -> Unit,
 ) -> Unit =
-  #|(protocolId, workerHandler) => {
+  #|(protocolId, runtimeFailedStatus, workerHandler) => {
   #|  globalThis.onmessage = (event) => {
   #|    const message = event.data;
   #|    if (message.type !== "atomic-init") return;
@@ -13,7 +14,18 @@ extern "js" fn install_atomic_worker(
   #|      message.controlOffset * Int32Array.BYTES_PER_ELEMENT,
   #|    );
   #|    globalThis.postMessage({ type: "initialized", id: message.id });
-  #|    workerHandler(shared, message.slotBase, message.dataOffset);
+  #|    try {
+  #|      workerHandler(shared, message.slotBase, message.dataOffset);
+  #|    } catch (error) {
+  #|      const epoch = Atomics.load(shared, message.slotBase);
+  #|      Atomics.store(shared, message.slotBase + 8, runtimeFailedStatus);
+  #|      Atomics.store(shared, message.slotBase + 1, epoch);
+  #|      Atomics.notify(shared, message.slotBase + 1, 1);
+  #|      globalThis.postMessage({
+  #|        type: "runtime-error",
+  #|        message: error instanceof Error ? error.message : String(error),
+  #|      });
+  #|    }
   #|  };
   #|  globalThis.postMessage({ type: "online", protocol: protocolId });
   #|}
@@ -34,7 +46,11 @@ pub fn serve(
   contract : KernelContract,
   kernel : (SharedSlice, Int, Int, Int) -> Unit,
 ) -> Unit {
-  install_atomic_worker(contract.id_, fn(shared, slot_base, data_offset) {
+  install_atomic_worker(contract.id_, KERNEL_STATUS_RUNTIME_FAILED, fn(
+    shared,
+    slot_base,
+    data_offset,
+  ) {
     run_worker(shared, slot_base, data_offset, kernel)
   })
 }
@@ -51,7 +67,8 @@ fn validate_kernel_entries(
     let expected = manifest.kernels_[index]
     let actual = entries[index].spec_
     if actual.id_ != expected.id_ ||
-      actual.layout_hash_ != expected.layout_hash_ {
+      actual.layout_hash_ != expected.layout_hash_ ||
+      actual.kind_ != expected.kind_ {
       abort("kernel entries do not match manifest order or layout")
     }
   }
@@ -66,7 +83,7 @@ pub fn serve_kernels(
 ) -> Unit {
   let copied = entries.copy()
   validate_kernel_entries(manifest, copied)
-  install_atomic_worker(manifest.protocol_id_, fn(
+  install_atomic_worker(manifest.protocol_id_, KERNEL_STATUS_RUNTIME_FAILED, fn(
     shared,
     slot_base,
     data_offset,

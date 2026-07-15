@@ -1,0 +1,24 @@
+{
+  "version": 1,
+  "manifest": "mayo.test.generated-image/v1",
+  "layouts": [
+    {
+      "name": "Image",
+      "fields": [
+        { "name": "width", "type": "i32" },
+        { "name": "height", "type": "i32" },
+        { "name": "source", "type": "slice_i32" },
+        { "name": "scratch", "type": "slice_i32" }
+      ]
+    }
+  ],
+  "kernels": [
+    { "name": "grayscale", "id": 1, "layout": "Image" },
+    {
+      "name": "detect_edges",
+      "id": 2,
+      "layout": "Image",
+      "argument": "threshold"
+    }
+  ]
+}

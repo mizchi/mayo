@@ -31,3 +31,50 @@ Deno.test("all warm pools produce matching shared-buffer checksums", async () =>
   assert.equal(new Set(reports.map((report) => report.memory.checksum)).size, 1);
   assert.equal(new Set(reports.map((report) => report.compute.checksum)).size, 1);
 });
+
+Deno.test("native and Mayo custom scenarios use the same matrix contract", async () => {
+  const scenario = [
+    "--elements",
+    "1024",
+    "--rounds",
+    "4",
+    "--warmups",
+    "1",
+    "--batches",
+    "2",
+  ];
+  const commands = [
+    ["./dist/c-bench", ["--backend", "pthread", "--workers", "2", ...scenario]],
+    ["./dist/c-bench", ["--backend", "mmap", "--workers", "2", ...scenario]],
+    ["./dist/rust-bench", ["--backend", "std", "--workers", "2", ...scenario]],
+    ["./dist/rust-bench", ["--backend", "rayon", "--workers", "2", ...scenario]],
+    [
+      Deno.execPath(),
+      ["run", "--allow-read", "./dist/mayo_bench.js", "--workers", "2", ...scenario],
+    ],
+    [
+      Deno.execPath(),
+      [
+        "run",
+        "--allow-read",
+        "./dist/mayo_bench.js",
+        "--workers",
+        "2",
+        "--wasm",
+        ...scenario,
+      ],
+    ],
+  ] as const;
+  const reports = await Promise.all(commands.map(async ([command, args]) => {
+    const output = await new Deno.Command(command, {
+      args: [...args],
+      stdout: "piped",
+      stderr: "piped",
+    }).output();
+    assert.equal(output.success, true, new TextDecoder().decode(output.stderr));
+    return JSON.parse(new TextDecoder().decode(output.stdout)) as {
+      scenario: { checksum: number };
+    };
+  }));
+  assert.equal(new Set(reports.map((report) => report.scenario.checksum)).size, 1);
+});

@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "schema": "examples/mix_kernel/mayo.kernel.json",
+  "descriptor": "examples/mix_kernel/kernel.generated.mbt",
+  "artifacts": [
+    {
+      "package": "examples/mix_worker",
+      "target": "js",
+      "output": "dist/mayo_worker.js"
+    }
+  ]
+}

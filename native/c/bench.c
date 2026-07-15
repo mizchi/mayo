@@ -355,6 +355,11 @@ int main(int argc, char **argv) {
   size_t worker_count = 4;
   bool run_self_test = false;
   bool quick = false;
+  bool custom_scenario = false;
+  size_t custom_elements = 0;
+  uint32_t custom_rounds = 0;
+  size_t custom_warmups = 3;
+  size_t custom_batches = 10;
   for (int index = 1; index < argc; index++) {
     if (strcmp(argv[index], "--backend") == 0 && index + 1 < argc) {
       const char *value = argv[++index];
@@ -374,6 +379,19 @@ int main(int argc, char **argv) {
       run_self_test = true;
     } else if (strcmp(argv[index], "--quick") == 0) {
       quick = true;
+    } else if (strcmp(argv[index], "--elements") == 0 && index + 1 < argc) {
+      custom_elements = strtoull(argv[++index], NULL, 10);
+      custom_scenario = true;
+    } else if (strcmp(argv[index], "--rounds") == 0 && index + 1 < argc) {
+      custom_rounds = (uint32_t)strtoul(argv[++index], NULL, 10);
+    } else if (strcmp(argv[index], "--warmups") == 0 && index + 1 < argc) {
+      custom_warmups = strtoull(argv[++index], NULL, 10);
+    } else if (strcmp(argv[index], "--batches") == 0 && index + 1 < argc) {
+      custom_batches = strtoull(argv[++index], NULL, 10);
+      if (custom_batches == 0) {
+        fprintf(stderr, "batches must be positive\n");
+        return 2;
+      }
     } else {
       fprintf(stderr, "unknown argument: %s\n", argv[index]);
       return 2;
@@ -381,6 +399,20 @@ int main(int argc, char **argv) {
   }
   if (run_self_test) {
     self_test(backend);
+    return 0;
+  }
+  if (custom_scenario) {
+    Pool pool = pool_create(backend, worker_count, custom_elements);
+    const ScenarioResult scenario = measure_scenario(
+        &pool,
+        custom_elements,
+        custom_rounds,
+        custom_warmups,
+        custom_batches);
+    pool_destroy(&pool);
+    printf("{\"backend\":\"%s\",\"workers\":%zu,", backend_name(backend), worker_count);
+    print_scenario("scenario", scenario, custom_elements, custom_rounds);
+    puts("}");
     return 0;
   }
 

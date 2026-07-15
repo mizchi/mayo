@@ -10,6 +10,10 @@ pub fn add(delta~ : Int) -> @mayo.KernelCall
 
 pub fn add_entry((@mayo.SharedSlice, Int, Int, Int) -> Unit) -> @mayo.KernelEntry
 
+pub fn fail() -> @mayo.KernelCall
+
+pub fn fail_entry((@mayo.SharedSlice, Int, Int, Int) -> Unit) -> @mayo.KernelEntry
+
 pub fn manifest() -> @mayo.KernelManifest
 
 pub fn mix(rounds~ : Int) -> @mayo.KernelCall
@@ -17,6 +21,18 @@ pub fn mix(rounds~ : Int) -> @mayo.KernelCall
 pub fn mix_entry((@mayo.SharedSlice, Int, Int, Int) -> Unit) -> @mayo.KernelEntry
 
 pub fn noop() -> @mayo.KernelCall
+
+pub fn sum() -> @mayo.ReducerCall
+
+pub fn sum_entry((@mayo.SharedSlice, Int, Int, Int) -> Int) -> @mayo.KernelEntry
+
+pub fn write_worker_id(scratch_base~ : Int) -> @mayo.KernelCall
+
+pub fn write_worker_id_entry((@mayo.SharedSlice, Int, Int, Int) -> Unit) -> @mayo.KernelEntry
+
+pub fn zip_add(right_delta~ : Int) -> @mayo.KernelCall
+
+pub fn zip_add_entry((@mayo.SharedSlice, Int, Int, Int) -> Unit) -> @mayo.KernelEntry
 
 // Errors
 

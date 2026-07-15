@@ -4,7 +4,7 @@
 priv type HostWorker
 
 ///|
-/// Deno SharedArrayBuffer handle. Kept private behind `SharedSlice`.
+/// JavaScript SharedArrayBuffer handle. Kept private behind `SharedSlice`.
 #external
 priv type HostSharedArrayBuffer
 
@@ -77,11 +77,51 @@ extern "js" fn start_host_worker(
   protocol_id : String,
   timeout_ms : Int,
 ) -> @js_async.Promise[HostWorker] =
-  #| (workerUrl, protocolId, timeoutMs) => new Promise((resolve, reject) => {
+  #| async (workerUrl, protocolId, timeoutMs) => {
+  #|   const runtimeEntry = globalThis.process?.argv?.[1];
+  #|   const runtimeEntryUrl = runtimeEntry
+  #|     ? `file://${runtimeEntry.startsWith("/") ? "" : "/"}${runtimeEntry.replaceAll("\\", "/")}`
+  #|     : undefined;
   #|   const baseUrl = globalThis.document?.baseURI ??
-  #|     globalThis.Deno?.mainModule ?? globalThis.location?.href ??
+  #|     globalThis.Deno?.mainModule ?? globalThis.location?.href ?? runtimeEntryUrl ??
   #|     `file://${globalThis.process?.cwd?.() ?? "."}/`;
-  #|   const worker = new Worker(new URL(workerUrl, baseUrl), { type: "module" });
+  #|   const resolvedWorkerUrl = new URL(workerUrl, baseUrl);
+  #|   let worker;
+  #|   const isBun = typeof globalThis.process?.versions?.bun === "string";
+  #|   if (typeof globalThis.Worker === "function") {
+  #|     worker = new globalThis.Worker(resolvedWorkerUrl, { type: "module" });
+  #|   } else {
+  #|     const { Worker: NodeWorker } = await import("node:worker_threads");
+  #|     const bootstrap = [
+  #|       'import { parentPort, workerData } from "node:worker_threads";',
+  #|       'const pending = [];',
+  #|       'globalThis.postMessage = (data) => parentPort.postMessage(data);',
+  #|       'parentPort.on("message", (data) => {',
+  #|       '  if (typeof globalThis.onmessage === "function") globalThis.onmessage({ data });',
+  #|       '  else pending.push(data);',
+  #|       '});',
+  #|       'await import(workerData.moduleUrl);',
+  #|       'for (const data of pending) globalThis.onmessage({ data });',
+  #|     ].join("\n");
+  #|     worker = new NodeWorker(
+  #|       new URL(`data:text/javascript,${encodeURIComponent(bootstrap)}`),
+  #|       { type: "module", workerData: { moduleUrl: resolvedWorkerUrl.href } },
+  #|     );
+  #|   }
+  #|   return await new Promise((resolve, reject) => {
+  #|   const listen = (type, listener) => {
+  #|     if (typeof worker.addEventListener === "function") {
+  #|       worker.addEventListener(type, listener);
+  #|       return () => worker.removeEventListener(type, listener);
+  #|     }
+  #|     const wrapped = type === "message"
+  #|       ? (data) => listener({ data })
+  #|       : (error) => listener({ error, message: error?.message });
+  #|     worker.on(type, wrapped);
+  #|     return () => worker.off(type, wrapped);
+  #|   };
+  #|   let removeMessage = () => {};
+  #|   let removeError = () => {};
   #|   const timeout = setTimeout(() => {
   #|     cleanup();
   #|     worker.terminate();
@@ -114,12 +154,21 @@ extern "js" fn start_host_worker(
   #|   };
   #|   const cleanup = () => {
   #|     clearTimeout(timeout);
-  #|     worker.removeEventListener("message", onMessage);
-  #|     worker.removeEventListener("error", onError);
+  #|     removeMessage();
+  #|     removeError();
   #|   };
-  #|   worker.addEventListener("message", onMessage);
-  #|   worker.addEventListener("error", onError);
-  #| })
+  #|   removeMessage = listen("message", onMessage);
+  #|   removeError = listen("error", onError);
+  #|   if (isBun && resolvedWorkerUrl.searchParams.has("mayo-contract")) {
+  #|     const wasmPath = resolvedWorkerUrl.searchParams.get("mayo-wasm");
+  #|     worker.postMessage({
+  #|       type: "mayo-wasm-bootstrap",
+  #|       contractId: resolvedWorkerUrl.searchParams.get("mayo-contract"),
+  #|       wasmUrl: new URL(wasmPath, resolvedWorkerUrl).href,
+  #|     });
+  #|   }
+  #|   });
+  #| }
 
 ///|
 #borrow(worker, buffer)
@@ -136,6 +185,19 @@ extern "js" fn initialize_host_worker(
 ) -> @js_async.Promise[Unit] =
   #| (worker, id, buffer, memory, controlOffset, slotBase, dataOffset, dataCapacity, timeoutMs) =>
   #|   new Promise((resolve, reject) => {
+  #|     const listen = (type, listener) => {
+  #|       if (typeof worker.addEventListener === "function") {
+  #|         worker.addEventListener(type, listener);
+  #|         return () => worker.removeEventListener(type, listener);
+  #|       }
+  #|       const wrapped = type === "message"
+  #|         ? (data) => listener({ data })
+  #|         : (error) => listener({ error, message: error?.message });
+  #|       worker.on(type, wrapped);
+  #|       return () => worker.off(type, wrapped);
+  #|     };
+  #|     let removeMessage = () => {};
+  #|     let removeError = () => {};
   #|     const timeout = setTimeout(() => {
   #|       cleanup();
   #|       reject(new Error(`worker initialization timed out after ${timeoutMs} ms`));
@@ -157,11 +219,11 @@ extern "js" fn initialize_host_worker(
   #|     };
   #|     const cleanup = () => {
   #|       clearTimeout(timeout);
-  #|       worker.removeEventListener("message", onMessage);
-  #|       worker.removeEventListener("error", onError);
+  #|       removeMessage();
+  #|       removeError();
   #|     };
-  #|     worker.addEventListener("message", onMessage);
-  #|     worker.addEventListener("error", onError);
+  #|     removeMessage = listen("message", onMessage);
+  #|     removeError = listen("error", onError);
   #|     worker.postMessage({
   #|       type: "atomic-init",
   #|       id,
@@ -203,8 +265,12 @@ extern "js" fn wasm_guest_worker_url(
   protocol_id : String,
 ) -> String =
   #| (workerUrl, wasmUrl, protocolId) => {
+  #|   const runtimeEntry = globalThis.process?.argv?.[1];
+  #|   const runtimeEntryUrl = runtimeEntry
+  #|     ? `file://${runtimeEntry.startsWith("/") ? "" : "/"}${runtimeEntry.replaceAll("\\", "/")}`
+  #|     : undefined;
   #|   const baseUrl = globalThis.document?.baseURI ??
-  #|     globalThis.Deno?.mainModule ?? globalThis.location?.href ??
+  #|     globalThis.Deno?.mainModule ?? globalThis.location?.href ?? runtimeEntryUrl ??
   #|     `file://${globalThis.process?.cwd?.() ?? "."}/`;
   #|   const url = new URL(workerUrl, baseUrl);
   #|   url.searchParams.set("mayo-wasm", wasmUrl);
@@ -212,9 +278,8 @@ extern "js" fn wasm_guest_worker_url(
   #|   return url.href;
   #| }
 
-///| Non-blocking wait for browser main threads, with a timer fallback for
-
 ///|
+/// Non-blocking wait for browser main threads, with a timer fallback for
 /// runtimes that do not expose `Atomics.waitAsync`.
 #borrow(shared)
 extern "js" fn atomic_wait_async_timeout(
@@ -242,4 +307,57 @@ extern "js" fn atomic_wait_async_timeout(
   #|     }
   #|   }
   #|   return true;
+  #| }
+
+///|
+/// Waits until every Worker completes `epoch`, or returns the first Worker
+/// that reports a runtime failure. `-1` means complete and `-2` means timeout.
+#borrow(shared)
+extern "js" fn atomic_wait_run_async(
+  shared : SharedInts,
+  worker_count : Int,
+  slot_length : Int,
+  done_offset : Int,
+  status_offset : Int,
+  epoch : Int,
+  runtime_failed_status : Int,
+  timeout_ms : Int,
+) -> @js_async.Promise[Int] =
+  #| async (
+  #|   shared,
+  #|   workerCount,
+  #|   slotLength,
+  #|   doneOffset,
+  #|   statusOffset,
+  #|   epoch,
+  #|   runtimeFailedStatus,
+  #|   timeoutMs,
+  #| ) => {
+  #|   const deadline = performance.now() + timeoutMs;
+  #|   const useWaitAsync = typeof document !== "undefined" &&
+  #|     typeof Atomics.waitAsync === "function";
+  #|   while (true) {
+  #|     let pendingIndex = -1;
+  #|     for (let id = 0; id < workerCount; id += 1) {
+  #|       const base = id * slotLength;
+  #|       if (Atomics.load(shared, base + doneOffset) === epoch) {
+  #|         if (Atomics.load(shared, base + statusOffset) === runtimeFailedStatus) {
+  #|           return id;
+  #|         }
+  #|       } else if (pendingIndex === -1) {
+  #|         pendingIndex = base + doneOffset;
+  #|       }
+  #|     }
+  #|     if (pendingIndex === -1) return -1;
+  #|     const remaining = deadline - performance.now();
+  #|     if (remaining <= 0) return -2;
+  #|     const waitMs = Math.min(remaining, 1);
+  #|     const current = Atomics.load(shared, pendingIndex);
+  #|     if (useWaitAsync) {
+  #|       const wait = Atomics.waitAsync(shared, pendingIndex, current, waitMs);
+  #|       if (wait.async) await wait.value;
+  #|     } else {
+  #|       await new Promise((resolve) => setTimeout(resolve, waitMs));
+  #|     }
+  #|   }
   #| }

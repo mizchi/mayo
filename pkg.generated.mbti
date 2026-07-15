@@ -10,13 +10,19 @@ pub fn kernel_entry(KernelSpec, (SharedSlice, Int, Int, Int) -> Unit) -> KernelE
 
 pub fn kernel_manifest(String, Array[KernelSpec]) -> KernelManifest
 
-pub fn kernel_manifest_pool_options(KernelManifest, String, capacity~ : Int, worker_count? : Int, timeout_ms? : Int) -> PoolOptions
+pub fn kernel_manifest_pool_options(KernelManifest, String, capacity~ : Int, worker_count? : Int, timeout_ms? : Int, recovery? : RecoveryPolicy) -> PoolOptions
 
-pub fn kernel_pool_options(KernelContract, String, capacity~ : Int, worker_count? : Int, timeout_ms? : Int) -> PoolOptions
+pub fn kernel_pool_options(KernelContract, String, capacity~ : Int, worker_count? : Int, timeout_ms? : Int, recovery? : RecoveryPolicy) -> PoolOptions
 
 pub fn kernel_spec(id~ : Int, layout_hash~ : Int) -> KernelSpec
 
-pub fn pool_options(String, capacity~ : Int, worker_count? : Int, timeout_ms? : Int) -> PoolOptions
+pub fn pool_options(String, capacity~ : Int, worker_count? : Int, timeout_ms? : Int, recovery? : RecoveryPolicy) -> PoolOptions
+
+pub fn reducer_call(KernelManifest, KernelSpec, argument? : Int) -> ReducerCall
+
+pub fn reducer_entry(KernelSpec, (SharedSlice, Int, Int, Int) -> Int) -> KernelEntry
+
+pub fn reducer_spec(id~ : Int, layout_hash~ : Int) -> KernelSpec
 
 pub fn run_worker(SharedInts, Int, Int, (SharedSlice, Int, Int, Int) -> Unit) -> Unit
 
@@ -26,7 +32,7 @@ pub fn serve_kernels(KernelManifest, Array[KernelEntry]) -> Unit
 
 pub fn start((SharedSlice, Int, Int, Int) -> Unit) -> Unit
 
-pub fn wasm_kernel_pool_options(KernelContract, String, String, capacity~ : Int, worker_count? : Int, timeout_ms? : Int) -> PoolOptions
+pub fn wasm_kernel_pool_options(KernelContract, String, String, capacity~ : Int, worker_count? : Int, timeout_ms? : Int, recovery? : RecoveryPolicy) -> PoolOptions
 
 // Errors
 pub suberror PoolError {
@@ -35,6 +41,7 @@ pub suberror PoolError {
   Timeout(String)
   Closed
   Busy
+  Cancelled
 }
 
 // Types and methods
@@ -75,7 +82,7 @@ pub fn Pool::close(Self) -> Unit
 pub async fn Pool::create(PoolOptions) -> Self raise PoolError
 pub fn Pool::run(Self, end~ : Int, start? : Int, argument? : Int) -> RunResult raise PoolError
 pub async fn Pool::run_async(Self, end~ : Int, start? : Int, argument? : Int) -> RunResult raise PoolError
-pub fn Pool::run_kernel(Self, KernelCall, end~ : Int, start? : Int) -> RunResult raise PoolError
+pub fn Pool::run_kernel(Self, KernelCall, end~ : Int, start? : Int, grain? : Int) -> RunResult raise PoolError
 pub fn Pool::values(Self) -> SharedSlice
 pub fn Pool::worker_count(Self) -> Int
 
@@ -83,10 +90,36 @@ pub struct PoolOptions {
   // private fields
 }
 
-pub(all) struct RunResult {
+pub(all) enum RecoveryPolicy {
+  PoisonPool
+  RestartWorkers
+}
+
+pub(all) struct ReduceResult {
+  value : Int
   epoch : Int
   elapsed_ms : Double
 }
+
+pub struct ReducerCall {
+  // private fields
+}
+
+pub(all) struct RunResult {
+  epoch : Int
+  elapsed_ms : Double
+  grain : Int
+}
+
+pub struct SharedArena {
+  // private fields
+}
+pub fn SharedArena::allocate(Self, length~ : Int) -> SharedRegion raise PoolError
+pub fn SharedArena::allocate_worker_scratch(Self, workers~ : Int, words_per_worker~ : Int) -> WorkerScratch raise PoolError
+pub fn SharedArena::capacity(Self) -> Int
+pub fn SharedArena::remaining(Self) -> Int
+pub fn SharedArena::reset(Self) -> Unit
+pub fn SharedArena::shared_i32(Self) -> SharedI32
 
 pub struct SharedI32 {
   // private fields
@@ -95,11 +128,26 @@ pub fn SharedI32::byte_length(Self) -> Int
 pub fn SharedI32::fill(Self, Int) -> Unit
 pub fn SharedI32::length(Self) -> Int
 pub fn SharedI32::load(Self, Int) -> Int
+pub async fn SharedI32::par_chunks(Self, KernelCall, grain? : Int, start? : Int, end? : Int) -> RunResult raise PoolError
 pub async fn SharedI32::par_for(Self, KernelCall, start? : Int, end? : Int) -> RunResult raise PoolError
+pub async fn SharedI32::par_reduce(Self, ReducerCall, init~ : Int, combine~ : (Int, Int) -> Int, start? : Int, end? : Int) -> ReduceResult raise PoolError
 pub fn SharedI32::store(Self, Int, Int) -> Unit
 
 #external
 pub type SharedInts
+
+pub struct SharedRegion {
+  // private fields
+}
+pub fn SharedRegion::fill(Self, Int) -> Unit
+pub fn SharedRegion::length(Self) -> Int
+pub fn SharedRegion::load(Self, Int) -> Int
+pub fn SharedRegion::offset(Self) -> Int
+pub async fn SharedRegion::par_for_each(Self, KernelCall, grain? : Int) -> RunResult raise PoolError
+pub async fn SharedRegion::par_map_in_place(Self, KernelCall, grain? : Int) -> RunResult raise PoolError
+pub async fn SharedRegion::par_pipeline(Self, Array[KernelCall], grain? : Int) -> Array[RunResult] raise PoolError
+pub async fn SharedRegion::par_zip(Self, Self, (Int) -> KernelCall, grain? : Int) -> RunResult raise PoolError
+pub fn SharedRegion::store(Self, Int, Int) -> Unit
 
 #external
 pub type SharedSlice
@@ -108,14 +156,19 @@ pub fn SharedSlice::fill(Self, Int) -> Unit
 pub fn SharedSlice::length(Self) -> Int
 pub fn SharedSlice::load(Self, Int) -> Int
 pub fn SharedSlice::store(Self, Int, Int) -> Unit
+pub fn SharedSlice::worker_id(Self) -> Int
 
 pub struct ThreadPool {
   // private fields
 }
+pub fn ThreadPool::arena(Self) -> SharedArena
+pub fn ThreadPool::cancel_current(Self) -> Bool
 pub fn ThreadPool::capacity(Self) -> Int
 pub fn ThreadPool::close(Self) -> Unit
-pub async fn ThreadPool::open(KernelManifest, String, capacity~ : Int, workers? : Int, timeout_ms? : Int) -> Self raise PoolError
+pub async fn ThreadPool::open(KernelManifest, String, capacity~ : Int, workers? : Int, timeout_ms? : Int, recovery? : RecoveryPolicy) -> Self raise PoolError
+pub async fn ThreadPool::par_chunks(Self, KernelCall, grain? : Int, start? : Int, end? : Int) -> RunResult raise PoolError
 pub async fn ThreadPool::par_for(Self, KernelCall, start? : Int, end? : Int) -> RunResult raise PoolError
+pub async fn ThreadPool::par_reduce(Self, ReducerCall, init~ : Int, combine~ : (Int, Int) -> Int, start? : Int, end? : Int) -> ReduceResult raise PoolError
 pub async fn[X] ThreadPool::scope(Self, async (ThreadScope[X]) -> X) -> X raise PoolError
 pub fn ThreadPool::shared_i32(Self) -> SharedI32
 pub fn ThreadPool::worker_count(Self) -> Int
@@ -124,6 +177,14 @@ pub struct ThreadScope[X] {
   // private fields
 }
 pub fn[X] ThreadScope::spawn(Self[X], KernelCall, start? : Int, end? : Int) -> JoinHandle
+pub fn[X] ThreadScope::spawn_chunks(Self[X], KernelCall, grain? : Int, start? : Int, end? : Int) -> JoinHandle
+
+pub struct WorkerScratch {
+  // private fields
+}
+pub fn WorkerScratch::words_per_worker(Self) -> Int
+pub fn WorkerScratch::worker_offset(Self, Int) -> Int
+pub fn WorkerScratch::worker_region(Self, Int) -> SharedRegion
 
 // Type aliases
 

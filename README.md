@@ -4,65 +4,18 @@
 
 Mayo is an experimental zero-copy data-parallel Worker pool for MoonBit, inspired by Rayon.
 
-- MoonBit/JS hosts and prebuilt Workers
-- MoonBit/Wasm kernels over shared `WebAssembly.Memory`
-- Deno and cross-origin-isolated web pages
-- Persistent Workers coordinated with JavaScript Atomics
+- MoonBit Host and prebuilt MoonBit/JS or MoonBit/Wasm kernels
+- persistent Workers coordinated through `SharedArrayBuffer` and Atomics
+- Deno, browsers, Node.js, and Bun
+- static and dynamic scheduling, reduction, structured concurrency, and recovery
 
-Bulk data stays in shared `Int32` memory. A dispatch sends only a kernel ID, range, and one `Int`
-argument.
+Mayo shares explicit `Int32` memory, not MoonBit heap objects. A dispatch transfers only a kernel
+descriptor, a half-open range, and one `Int` argument. JSON is not part of the primary API.
 
-> [!WARNING]
-> Mayo does not share MoonBit heap objects, closures, strings, or ordinary arrays. Store structured
-> data as explicit offsets and lengths inside shared memory.
+## Minimal Host
 
-## Example
-
-Define a descriptor package shared by the Host and Worker builds:
-
-```moonbit
-fn scale_spec() -> @mayo.KernelSpec {
-  @mayo.kernel_spec(id=1, layout_hash=0x5343414C)
-}
-
-pub fn manifest() -> @mayo.KernelManifest {
-  @mayo.kernel_manifest("my-app/kernels/v1", [scale_spec()])
-}
-
-pub fn scale(factor~ : Int) -> @mayo.KernelCall {
-  @mayo.kernel_call(manifest(), scale_spec(), argument=factor)
-}
-
-pub fn scale_entry(
-  implementation : (@mayo.SharedSlice, Int, Int, Int) -> Unit,
-) -> @mayo.KernelEntry {
-  @mayo.kernel_entry(scale_spec(), implementation)
-}
-```
-
-Compile the Worker ahead of time:
-
-```moonbit
-fn scale_range(
-  values : @mayo.SharedSlice,
-  start : Int,
-  end : Int,
-  factor : Int,
-) {
-  for index = start; index < end; index = index + 1 {
-    values.store(index, values.load(index) * factor)
-  }
-}
-
-fn main {
-  @mayo.serve_kernels(
-    @kernels.manifest(),
-    [@kernels.scale_entry(scale_range)],
-  )
-}
-```
-
-Open the pool from MoonBit and dispatch the kernel:
+Host and Worker builds import the same descriptor package. Descriptors may be written in MoonBit or
+generated from [`mayo.kernel.json`](./examples/mix_kernel/mayo.kernel.json).
 
 ```moonbit
 async fn main {
@@ -76,72 +29,82 @@ async fn main {
 
   let values = threads.shared_i32()
   values.fill(2)
-  let result = values.par_for(@kernels.scale(factor=3))
-  println("dispatch: \{result.elapsed_ms} ms")
+  let mapped = values.par_chunks(@kernels.scale(factor=3)) // auto grain
+  let sum = values.par_reduce(
+    @kernels.sum(),
+    init=0,
+    combine=fn(left, right) { left + right },
+  )
+  println("dispatch \{mapped.elapsed_ms} ms; sum \{sum.value}")
 }
 ```
 
-Host and Worker startup fails when their manifests, kernel IDs, or layout hashes differ.
+The separately compiled Worker binds implementations to the same manifest:
 
-## Image pipeline example
-
-The real-world example runs grayscale conversion and Sobel edge detection over a shared 640x360 RGB
-frame. The intermediate image remains in a second shared-memory plane.
-
-```console
-just example-image
+```moonbit
+fn main {
+  @mayo.serve_kernels(@kernels.manifest(), [
+    @kernels.scale_entry(scale_range),
+    @kernels.sum_entry(sum_range),
+  ])
+}
 ```
 
-See the shared [image contract](./examples/image_pipeline/pipeline.mbt),
-[Worker kernels](./examples/image_worker/main.mbt), and
-[MoonBit Host](./examples/image_host/main.mbt).
+`just build-kernel` demonstrates descriptor generation and ahead-of-time artifact placement through
+[`mayo.build.json`](./mayo.build.json). Startup rejects mismatched manifest IDs, kernel IDs, layout
+hashes, or kernel kinds.
 
-For structured concurrency, see the runnable [scope example](./examples/scope_host) or run
-`just example-scope`.
+## Data-parallel API
 
-## Runtime support
+- `par_for`: weighted static ranges
+- `par_chunks`: dynamic work sharing; omit `grain` to learn it automatically
+- `par_reduce`: Worker-local partials, combined deterministically by Worker ID
+- `SharedArena`: non-overlapping POD layouts and per-Worker scratch regions; Guest kernels obtain
+  their stable index with `SharedSlice::worker_id`
+- `SharedRegion`: `par_map_in_place`, `par_for_each`, `par_zip`, and `par_pipeline`
+- `ThreadPool::scope`: FIFO tasks backed by `moonbitlang/async`
+- `RecoveryPolicy::RestartWorkers`: replace failed Workers while retaining shared data
 
-| Runtime | Status    | Requirement                           |
-| ------- | --------- | ------------------------------------- |
-| Deno    | Supported | `--allow-read` for local Worker files |
-| Web     | Supported | COOP/COEP cross-origin isolation      |
-| Node.js | Not yet   | Worker adapter is planned             |
+Generated layouts encode structures as checked offsets and lengths inside the shared arena. Strings,
+closures, ordinary arrays, and arbitrary object graphs are intentionally outside the contract.
 
-JavaScript Workers use the `mayo.kernel/v1` manifest ABI. Wasm kernels use the lower-level shared
-memory API; see [the Wasm example](./examples/wasm_host/main.mbt).
+## Runtimes
 
-JSON RPC exists only as an optional compatibility package under [`json`](./json). It is not part of
-the zero-copy API.
+| Runtime     | Status    | Local requirement                         |
+| ----------- | --------- | ----------------------------------------- |
+| Deno        | Supported | `--allow-read` for Worker/Wasm files      |
+| Web         | Supported | COOP/COEP cross-origin isolation          |
+| Node.js 24+ | Supported | built-in `worker_threads` adapter         |
+| Bun         | Supported | Web Worker adapter, including shared Wasm |
 
-## Current limitations
+The runtime glue is JavaScript; the Host client, descriptors, and kernels are MoonBit. Browser tests
+cover Chromium, Firefox, and WebKit. Node and Bun integration tests cover both JS and shared Wasm
+guests.
 
-- Shared application data is currently `Int32` only.
-- Descriptor packages are written manually.
-- Each dispatch has one range and one extra `Int` argument.
-- Scheduling uses static chunks; there is no work stealing yet.
-- Cancellation, Worker recovery, and kernel panic propagation are not implemented.
-- Wasm kernels must be allocation-free and cannot share the MoonBit heap.
-- Web pages must be cross-origin isolated.
-
-## Development
+## Examples and benchmarks
 
 ```console
-just check          # all checks and tests
-just example        # MoonBit/JS Deno example
-just example-scope  # structured concurrency
-just example-image  # shared RGB image pipeline
-just example-wasm   # MoonBit/JS Host + MoonBit/Wasm kernel
-just serve-web      # web example with COOP/COEP
-just compare 4      # pthread, mmap process, Rust, Rayon, and Mayo
+just example-image          # shared 640x360 grayscale + Sobel pipeline
+just example-scope          # structured concurrency
+just example-wasm           # MoonBit/JS Host + shared MoonBit/Wasm kernel
+just serve-web              # cross-origin-isolated browser example
+just compare 4              # pthread, mmap process, Rust, Rayon, Mayo
+just break-even 4           # workload break-even matrix
+just performance-regression # portable CI performance budget
+just release-check
 ```
 
-The browser suite runs in Chromium, Firefox, and WebKit.
+Warm dispatch is typically tens of microseconds on the measured development machine. Persistent
+`mmap` processes approach pthread latency once startup is amortized; Mayo becomes useful when each
+dispatch contains enough memory or compute work. See the [benchmark notes](./docs/benchmarks.md).
 
-## Documentation
+## Contract
 
-- [Kernel ABI v1](./docs/kernel-abi-v1.md)
-- [Japanese Kernel ABI v1](./docs/kernel-abi-v1.ja.md)
+- [Kernel ABI v4](./docs/kernel-abi-v4.md)
+- [Real-world image pipeline](./examples/image_pipeline/pipeline.mbt)
 - [Benchmark sources](./bench)
+
+The optional [`json`](./json) compatibility package is separate from the zero-copy API.
 
 Inspired by
 [an experiment using shared memory and mutexes with Rust/Wasm](https://zenn.dev/grainrigi/articles/b7c2320ef13c71).

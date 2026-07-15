@@ -3,6 +3,22 @@ set shell := ["zsh", "-cu"]
 default:
     @just --list
 
+# kernel schemaからMoonBitのHost/Guest descriptorを生成する
+generate:
+    deno run --allow-read --allow-write tools/mayo_gen.ts examples/mix_kernel/mayo.kernel.json examples/mix_kernel/kernel.generated.mbt
+    deno run --allow-read --allow-write tools/mayo_gen.ts tests/generated_contract/mayo.kernel.json tests/generated_contract/contract.generated.mbt
+    moon fmt
+
+# checked-in descriptorがschemaと一致することを検証する
+check-generated:
+    deno run --allow-read tools/mayo_gen.ts examples/mix_kernel/mayo.kernel.json examples/mix_kernel/kernel.generated.mbt --check
+    deno run --allow-read tools/mayo_gen.ts tests/generated_contract/mayo.kernel.json tests/generated_contract/contract.generated.mbt --check
+    deno run --allow-read tools/mayo_build.ts mayo.build.json --check
+
+# descriptor生成からguest artifact配置までをbuild契約に従って実行する
+build-kernel config="mayo.build.json":
+    deno run --allow-read --allow-write --allow-run tools/mayo_build.ts {{ config }}
+
 # MoonBit製host/client/Workerをrelease JSとして事前ビルドする
 build-worker:
     moon build --target js --release
@@ -28,7 +44,7 @@ build-worker:
 build-wasm:
     moon build examples/wasm_guest --target wasm --release
     mkdir -p dist
-    deno run --allow-read --allow-write wasm/patch_shared_memory.ts _build/wasm/release/build/examples/wasm_guest/wasm_guest.wasm dist/wasm_guest.wasm
+    cp _build/wasm/release/build/examples/wasm_guest/wasm_guest.wasm dist/wasm_guest.wasm
     cp wasm/guest_runtime.js dist/mayo_wasm_kernel.js
     mkdir -p dist/web
     cp dist/wasm_guest.wasm dist/web/wasm_guest.wasm
@@ -52,7 +68,7 @@ test: build
     deno run --allow-read dist/wasm_host.js
     deno run --allow-read dist/image_example.js
     cargo test --release --manifest-path native/rust/Cargo.toml
-    deno test --allow-read --allow-run tests bench
+    deno test --allow-read --allow-run tests bench tools
     pnpm exec playwright test
 
 # 型・フォーマット・lint・テストをまとめて検証する
@@ -68,7 +84,28 @@ check: build
     cargo clippy --release --manifest-path native/rust/Cargo.toml -- -D warnings
     deno fmt --check
     deno lint
-    deno test --allow-read --allow-run tests bench
+    deno test --allow-read --allow-run tests bench tools
+    pnpm exec playwright test
+
+# Browser以外のCI checkを1つの再現可能なentry pointで実行する
+ci-core: build
+    just check-generated
+    moon check --target js
+    moon check --target wasm
+    moon test --target js
+    deno run --allow-read dist/client_test.js
+    deno run --allow-read dist/json_host.js
+    deno run --allow-read dist/wasm_host.js
+    deno run --allow-read dist/image_example.js
+    cargo test --release --manifest-path native/rust/Cargo.toml
+    cargo fmt --manifest-path native/rust/Cargo.toml -- --check
+    cargo clippy --release --manifest-path native/rust/Cargo.toml -- -D warnings
+    deno fmt --check
+    deno lint
+    deno test --allow-read --allow-run tests bench tools
+
+# Playwright containerでWeb integrationだけを独立実行する
+ci-web: build-worker build-wasm
     pnpm exec playwright test
 
 # ソースを整形する
@@ -125,3 +162,23 @@ compare-quick workers="4": build
 # 常駐pool比較をJSONで出力する
 compare-json workers="4": build
     deno run --allow-read --allow-run bench/compare.ts --workers {{ workers }} --json
+
+# 要素数×計算量ごとのbreak-even matrixを実測する
+break-even workers="4": build
+    deno run --allow-read --allow-run bench/break_even.ts --workers {{ workers }}
+
+# CIや開発中に短縮matrixを実測する
+break-even-quick workers="4": build
+    deno run --allow-read --allow-run bench/break_even.ts --workers {{ workers }} --quick
+
+# break-even matrixを機械可読JSONで出力する
+break-even-json workers="4": build
+    deno run --allow-read --allow-run bench/break_even.ts --workers {{ workers }} --json
+
+# 同一runner上のpthread/Rayon比と絶対budgetで性能の桁落ちを検知する
+performance-regression workers="4" output="dist/performance-report.json": build
+    deno run --allow-read --allow-write --allow-run bench/regression.ts --workers {{ workers }} --output {{ output }}
+
+# 公開対象file、全非browser check、性能budgetを検証し、0.1.0 archiveを生成する
+release-check: ci-core performance-regression
+    moon package --list --frozen

@@ -154,6 +154,7 @@ fn pool_error_message(error : @mayo.PoolError) -> String {
     @mayo.PoolError::Timeout(message) => message
     @mayo.PoolError::Closed => "worker pool is closed"
     @mayo.PoolError::Busy => "worker pool is busy"
+    @mayo.PoolError::Cancelled => "dispatch cancelled"
   }
 }
 

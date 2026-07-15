@@ -8,7 +8,26 @@ pub type SharedInts
 pub type SharedSlice
 
 ///|
-extern "js" fn data_slice(shared : SharedInts, offset : Int) -> SharedSlice = "(shared, offset) => new Int32Array(shared.buffer, shared.byteOffset + offset * Int32Array.BYTES_PER_ELEMENT, shared.length - offset)"
+extern "js" fn data_slice(
+  shared : SharedInts,
+  offset : Int,
+  worker_id : Int,
+) -> SharedSlice =
+  #| (shared, offset, workerId) => {
+  #|   const view = new Int32Array(
+  #|     shared.buffer,
+  #|     shared.byteOffset + offset * Int32Array.BYTES_PER_ELEMENT,
+  #|     shared.length - offset,
+  #|   );
+  #|   Object.defineProperty(view, "__mayo_worker_id", { value: workerId });
+  #|   return view;
+  #| }
+
+///|
+/// Returns the stable pool-local Worker ID for a Guest kernel view.
+/// Host-side views return `-1`.
+#borrow(self)
+pub extern "js" fn SharedSlice::worker_id(self : SharedSlice) -> Int = "(self) => self.__mayo_worker_id ?? -1"
 
 ///|
 /// Returns the number of elements in this shared data view.
@@ -42,6 +61,13 @@ pub extern "js" fn SharedSlice::store(
 pub extern "js" fn SharedSlice::fill(self : SharedSlice, value : Int) -> Unit = "(self, value) => { self.fill(value); }"
 
 ///|
+#borrow(left, right)
+extern "js" fn shared_slice_same_buffer(
+  left : SharedSlice,
+  right : SharedSlice,
+) -> Bool = "(left, right) => left.buffer === right.buffer"
+
+///|
 #borrow(shared)
 extern "js" fn atomic_load(shared : SharedInts, index : Int) -> Int = "(shared, index) => Atomics.load(shared, index)"
 
@@ -52,6 +78,30 @@ extern "js" fn atomic_store(
   index : Int,
   value : Int,
 ) -> Unit = "(shared, index, value) => { Atomics.store(shared, index, value); }"
+
+///|
+/// Atomically claims `[current, min(current + grain, end))` without allowing
+/// the shared cursor to wrap past the signed Int32 range.
+#borrow(shared)
+extern "js" fn atomic_claim_chunk(
+  shared : SharedInts,
+  index : Int,
+  end : Int,
+  grain : Int,
+) -> Int =
+  #| (shared, index, end, grain) => {
+  #|   while (true) {
+  #|     const current = Atomics.load(shared, index);
+  #|     if (current >= end) return end;
+  #|     const next = Math.min(current + grain, end);
+  #|     if (Atomics.compareExchange(shared, index, current, next) === current) {
+  #|       return current;
+  #|     }
+  #|   }
+  #| }
+
+///|
+extern "js" fn worker_performance_now() -> Double = "() => performance.now()"
 
 ///|
 #borrow(shared)

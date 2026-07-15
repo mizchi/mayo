@@ -2,9 +2,9 @@
 
 [日本語](./README.ja.md)
 
-Mayo is an experimental data-parallel Worker pool for MoonBit's JavaScript backend. Both the host
-client and Worker kernel are written in MoonBit, compiled ahead of time to JavaScript, and run in a
-modern web browser or Deno.
+Mayo is an experimental data-parallel Worker pool for MoonBit. The host client is written in MoonBit
+and compiled to JavaScript; guest handlers can be compiled ahead of time to either JavaScript or
+WebAssembly and run in a modern web browser or Deno.
 
 Data and task descriptors are shared through `SharedArrayBuffer`. Persistent Workers sleep and wake
 through JavaScript Atomics, so Worker startup is amortized across many batches. The long-term goal
@@ -129,6 +129,70 @@ mailbox, not made into a concurrently shared heap object. Requests larger than `
 `SyncError::CapacityExceeded`. A mismatched version ID rejects `SyncGuest::create` before dispatch.
 Change the ID whenever the request or response schema changes incompatibly.
 
+## MoonBit/Wasm guest
+
+The host API stays the same when the guest handler is compiled with MoonBit's `wasm` linear-memory
+backend. Worker construction, Atomics, and Wasm instantiation live in the generic
+[`wasm/guest_runtime.js`](./wasm/guest_runtime.js) glue; JSON decoding, the typed handler, and JSON
+encoding execute inside Wasm.
+
+```text
+MoonBit/JS host
+  SyncGuest::call / call_async
+            │ SharedArrayBuffer mailbox
+generic JS Worker glue
+            │ copy UTF-8 bytes
+MoonBit/Wasm guest
+  FromJson -> handler -> ToJson
+```
+
+The contract package must support both targets and must not import the JS-only Mayo host package. It
+contains the derived request/response types and one stable `contract_id()` string. The Wasm guest
+imports that package and [`mizchi/mayo/wasm/abi`](./wasm/abi/abi.mbt):
+
+```moonbit
+fn handle(request : @contract.WasmSumRequest) -> @contract.WasmSumResponse {
+  // Runs inside Wasm.
+}
+
+pub fn mayo_abi_version() -> Int { @abi.abi_version() }
+pub fn mayo_abi_capacity() -> Int { @abi.abi_capacity() }
+pub fn mayo_contract_hash() -> Int {
+  @abi.contract_hash(@contract.contract_id())
+}
+pub fn mayo_request_ptr() -> Int { @abi.request_ptr() }
+pub fn mayo_response_ptr() -> Int { @abi.response_ptr() }
+pub fn mayo_handle(length : Int) -> Int {
+  @abi.handle_sync(length, handle)
+}
+```
+
+Export these six functions and linear memory in the guest package's Wasm link options. See
+[`examples/wasm_guest/moon.pkg`](./examples/wasm_guest/moon.pkg) for the complete configuration.
+MoonBit's official documentation describes the Wasm `exports`, `export-memory-name`, memory limits,
+and heap start options in its
+[package configuration reference](https://docs.moonbitlang.com/en/latest/toolchain/moon/package.html#wasm-backend-link-options).
+
+The MoonBit/JS host selects the generic glue and the `.wasm` artifact:
+
+```moonbit
+let guest = @mayo.SyncGuest::create(
+  contract,
+  @mayo.wasm_sync_guest_options(
+    "./mayo_wasm_guest.js",
+    "./guest.wasm",
+    mailbox_bytes=65536,
+  ),
+)
+let response = guest.call(request)       // Deno
+// let response = guest.call_async(request) // Web document
+```
+
+`just build-wasm` produces and stages the generic glue and Wasm artifact. `just example-wasm` runs
+the separately compiled Deno host/Wasm guest example. The ABI validates both its version and an
+FNV-1a hash of the contract ID before the Worker becomes available. ABI v1 accepts a maximum 1 MiB
+encoded request or response.
+
 ## Low-level zero-copy range API
 
 ### 1. Write a MoonBit Worker kernel
@@ -204,8 +268,8 @@ just test-web    # Chromium, Firefox, and WebKit integration
 ```
 
 The Playwright tests run on Chromium, Firefox, and WebKit. They verify `crossOriginIsolated`, the
-zero-copy range pool, the raw typed protocol, and a MoonBit `SyncGuest::call_async` round trip to a
-separately compiled MoonBit guest.
+zero-copy range pool, the raw typed protocol, and MoonBit `SyncGuest::call_async` round trips to
+separately compiled JavaScript and Wasm guests.
 
 ### 3. Use Mayo in Deno
 
@@ -247,6 +311,7 @@ pkgtype(kind: "executable")
 
 - `sync_contract[Request, Response](id) -> SyncContract[Request, Response]`
 - `sync_guest_options(worker_url, mailbox_bytes?=1048576, timeout_ms?=30000)`
+- `wasm_sync_guest_options(glue_url, wasm_url, mailbox_bytes?=1048576, timeout_ms?=30000)`
 - `SyncGuest::create(contract, options)` — starts one persistent guest and checks the contract ID
 - `SyncGuest::call(request) -> Response` — blocking Deno API
 - `SyncGuest::call_async(request) -> Response` — browser-safe API
@@ -256,6 +321,9 @@ pkgtype(kind: "executable")
 
 Host requests require `ToJson`; host responses require `FromJson`. The guest applies the inverse
 bounds. These compile-time bounds and the runtime contract ID form the boundary contract.
+
+The Wasm guest package uses `@abi.handle_sync` plus `abi_version`, `abi_capacity`, `contract_hash`,
+`request_ptr`, and `response_ptr` to implement the six ABI v1 exports expected by the generic glue.
 
 ### Host
 
@@ -280,6 +348,9 @@ Only one batch may run on a pool at a time. Ranges are validated against the sha
 ## Current limitations
 
 - The typed API copies JSON/UTF-8; it does not provide zero-copy sharing for MoonBit heap objects.
+- Wasm guests add another copy between the shared mailbox and Wasm linear memory.
+- Wasm guest ABI v1 supports the linear-memory `wasm` backend and a 1 MiB mailbox; `wasm-gc` is not
+  supported yet.
 - The low-level zero-copy data region is limited to an `Int32Array`.
 - Kernels must be compiled ahead of time as Worker modules.
 - A batch carries one additional `Int` argument.
@@ -302,6 +373,7 @@ just test-web      # Playwright Chromium / Firefox / WebKit integration
 just serve-web     # COOP/COEP web example server
 just example       # Deno host example
 just example-sync  # separately compiled typed Deno host/guest
+just example-wasm  # MoonBit/JS host and MoonBit/Wasm guest
 just compare 4     # pthread / mmap process / Rust / Rayon comparison
 just bench         # Worker startup and contended-mutex experiments
 ```
@@ -313,8 +385,11 @@ host_client.mbt, host_runtime_js.mbt  MoonBit host API and JavaScript boundary
 atomics_js.mbt, mayo.mbt              shared memory and Worker loop
 protocol.mbt, start.mbt               control protocol and Worker entry point
 sync_contract.mbt                     typed contract, mailbox, host, and guest API
+wasm/abi/, wasm/guest_runtime.js       MoonBit/Wasm ABI and generic JS glue
 examples/sync_contract/               request/response contract package
 examples/sync_host/, sync_guest/      separately compiled typed executables
+examples/wasm_contract/               shared JS/Wasm request and response types
+examples/wasm_host/, wasm_guest/      separately compiled JS host and Wasm guest
 examples/web/                         MoonBit browser client
 examples/host/                        MoonBit Deno client
 examples/mix_worker/                  MoonBit kernel

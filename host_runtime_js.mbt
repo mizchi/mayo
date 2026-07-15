@@ -55,6 +55,12 @@ extern "js" fn start_host_worker(
   #|     reject(new Error(`worker startup timed out after ${timeoutMs} ms`));
   #|   }, timeoutMs);
   #|   const onMessage = (event) => {
+  #|     if (event.data?.type === "startup-error") {
+  #|       cleanup();
+  #|       worker.terminate();
+  #|       reject(new Error(event.data.message ?? "worker startup failed"));
+  #|       return;
+  #|     }
   #|     if (event.data?.type !== "online") return;
   #|     if (event.data.protocol !== protocolId) {
   #|       cleanup();
@@ -68,6 +74,7 @@ extern "js" fn start_host_worker(
   #|     resolve(worker);
   #|   };
   #|   const onError = (event) => {
+  #|     event.preventDefault?.();
   #|     cleanup();
   #|     worker.terminate();
   #|     reject(event.error instanceof Error ? event.error : new Error(event.message));
@@ -103,6 +110,7 @@ extern "js" fn initialize_host_worker(
   #|       resolve(undefined);
   #|     };
   #|     const onError = (event) => {
+  #|       event.preventDefault?.();
   #|       cleanup();
   #|       reject(event.error instanceof Error ? event.error : new Error(event.message));
   #|     };
@@ -141,6 +149,21 @@ extern "js" fn atomic_wait_timeout(
 ///|
 /// Whether the current JavaScript agent is a browser document main thread.
 extern "js" fn is_browser_main_thread() -> Bool = "() => typeof document !== 'undefined'"
+
+///|
+/// Builds an absolute generic Wasm guest URL and carries startup parameters in
+/// its query string. The glue resolves `wasm_url` relative to itself.
+extern "js" fn wasm_guest_worker_url(
+  worker_url : String,
+  wasm_url : String,
+  protocol_id : String,
+) -> String =
+  #| (workerUrl, wasmUrl, protocolId) => {
+  #|   const url = new URL(workerUrl, import.meta.url);
+  #|   url.searchParams.set("mayo-wasm", wasmUrl);
+  #|   url.searchParams.set("mayo-contract", protocolId);
+  #|   return url.href;
+  #| }
 
 ///| Non-blocking wait for browser main threads, with a timer fallback for
 

@@ -18,6 +18,8 @@ pub fn[Request, Response] sync_contract(String) -> SyncContract[Request, Respons
 
 pub fn sync_guest_options(String, mailbox_bytes? : Int, timeout_ms? : Int) -> SyncGuestOptions
 
+pub fn wasm_sync_guest_options(String, String, mailbox_bytes? : Int, timeout_ms? : Int) -> SyncGuestOptions
+
 // Errors
 pub suberror PoolError {
   InvalidArgument(String)

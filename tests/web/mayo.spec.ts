@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 
-test("MoonBit host calls range and typed guests in a browser", async ({ page }) => {
+test("MoonBit host calls range, JS, and Wasm guests in a browser", async ({ page }) => {
   const pageErrors: Error[] = [];
   page.on("pageerror", (error) => pageErrors.push(error));
 
@@ -10,6 +10,6 @@ test("MoonBit host calls range and typed guests in a browser", async ({ page }) 
 
   const status = page.getByTestId("status");
   await expect(status).toHaveAttribute("data-state", "passed");
-  await expect(status).toContainText("range pool and typed struct Sync");
+  await expect(status).toContainText("range pool, typed JS guest, and typed Wasm guest");
   expect(pageErrors).toEqual([]);
 });

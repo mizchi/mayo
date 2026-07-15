@@ -1,0 +1,29 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "mizchi/mayo/examples/wasm_contract"
+
+import {
+  "moonbitlang/core/debug",
+  "moonbitlang/core/json",
+}
+
+// Values
+pub fn contract_id() -> String
+
+// Errors
+
+// Types and methods
+pub(all) struct WasmSumRequest {
+  name : String
+  values : Array[Int]
+  scale : Int
+} derive(Eq, ToJson, @debug.Debug, @json.FromJson)
+
+pub(all) struct WasmSumResponse {
+  message : String
+  total : Int
+  item_count : Int
+} derive(Eq, ToJson, @debug.Debug, @json.FromJson)
+
+// Type aliases
+
+// Traits

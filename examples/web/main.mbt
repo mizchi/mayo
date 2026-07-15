@@ -66,7 +66,31 @@ async fn main {
     response.item_count != 3 {
     abort("unexpected typed Web guest response")
   }
+  show_browser_result("running", "typed JS guest passed; starting Wasm guest")
+  let wasm_contract : @mayo.SyncContract[
+    @wasm_contract.WasmSumRequest,
+    @wasm_contract.WasmSumResponse,
+  ] = @mayo.sync_contract(@wasm_contract.contract_id())
+  let wasm_guest = @mayo.SyncGuest::create(
+    wasm_contract,
+    @mayo.wasm_sync_guest_options(
+      "./mayo_wasm_guest.js",
+      "./wasm_guest.wasm",
+      mailbox_bytes=65536,
+    ),
+  )
+  defer wasm_guest.close()
+  let wasm_response = wasm_guest.call_async({
+    name: "Web",
+    values: [3, 5, 8],
+    scale: 4,
+  })
+  if wasm_response.message != "hello Web from Wasm" ||
+    wasm_response.total != 64 ||
+    wasm_response.item_count != 3 {
+    abort("unexpected typed Wasm guest response")
+  }
   show_browser_result(
-    "passed", "MoonBit Web client passed: range pool and typed struct Sync",
+    "passed", "MoonBit Web client passed: range pool, typed JS guest, and typed Wasm guest",
   )
 }

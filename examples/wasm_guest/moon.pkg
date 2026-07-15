@@ -1,0 +1,26 @@
+import {
+  "mizchi/mayo/wasm/abi",
+  "mizchi/mayo/examples/wasm_contract" @contract,
+}
+
+supported_targets = "wasm"
+
+pkgtype(kind: "executable")
+
+options(
+  link: {
+    "wasm": {
+      "exports": [
+        "mayo_abi_version",
+        "mayo_abi_capacity",
+        "mayo_contract_hash",
+        "mayo_request_ptr",
+        "mayo_response_ptr",
+        "mayo_handle",
+      ],
+      "export-memory-name": "memory",
+      "memory-limits": { "min": 64, "max": 256 },
+      "heap-start-address": 3145728,
+    },
+  },
+)

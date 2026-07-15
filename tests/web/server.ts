@@ -3,6 +3,7 @@ const root = new URL("../../dist/web/", import.meta.url);
 function contentType(pathname: string): string {
   if (pathname.endsWith(".html")) return "text/html; charset=utf-8";
   if (pathname.endsWith(".js")) return "text/javascript; charset=utf-8";
+  if (pathname.endsWith(".wasm")) return "application/wasm";
   return "application/octet-stream";
 }
 

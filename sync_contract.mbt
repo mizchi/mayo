@@ -28,6 +28,7 @@ pub fn[Request, Response] SyncContract::id(
 /// Configuration for a typed guest Worker.
 pub struct SyncGuestOptions {
   priv worker_url : String
+  priv wasm_url : String?
   priv mailbox_bytes : Int
   priv timeout_ms : Int
 }
@@ -40,7 +41,19 @@ pub fn sync_guest_options(
   mailbox_bytes? : Int = 1048576,
   timeout_ms? : Int = 30000,
 ) -> SyncGuestOptions {
-  { worker_url, mailbox_bytes, timeout_ms }
+  { worker_url, wasm_url: None, mailbox_bytes, timeout_ms }
+}
+
+///|
+/// Builds options for a MoonBit/Wasm guest hosted by Mayo's generic JavaScript
+/// Worker glue. `wasm_url` is resolved relative to the glue module.
+pub fn wasm_sync_guest_options(
+  worker_url : String,
+  wasm_url : String,
+  mailbox_bytes? : Int = 1048576,
+  timeout_ms? : Int = 30000,
+) -> SyncGuestOptions {
+  { worker_url, wasm_url: Some(wasm_url), mailbox_bytes, timeout_ms }
 }
 
 ///|
@@ -177,8 +190,26 @@ pub async fn[Request, Response] SyncGuest::create(
   if options.timeout_ms < 1 {
     raise SyncError::InvalidArgument("timeout_ms must be positive")
   }
+  match options.wasm_url {
+    Some(wasm_url) => {
+      if wasm_url.is_empty() {
+        raise SyncError::InvalidArgument("wasm_url must not be empty")
+      }
+      if options.mailbox_bytes > 1048576 {
+        raise SyncError::InvalidArgument(
+          "Mayo Wasm ABI v1 supports at most 1048576 mailbox bytes",
+        )
+      }
+    }
+    None => ()
+  }
+  let worker_url = match options.wasm_url {
+    Some(wasm_url) =>
+      wasm_guest_worker_url(options.worker_url, wasm_url, contract.id_)
+    None => options.worker_url
+  }
   let pool = Pool::create({
-    worker_url: options.worker_url,
+    worker_url,
     worker_count: 1,
     capacity: mailbox_capacity_words(options.mailbox_bytes),
     timeout_ms: options.timeout_ms,

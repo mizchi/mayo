@@ -100,7 +100,7 @@ extern "js" fn parse_config() -> Config =
 extern "js" fn initial_value(index : Int) -> Int = "(index) => (Math.imul(index, 2654435761) + 12345) | 0"
 
 ///|
-extern "js" fn summarize_samples(samples : Array[Double]) -> Timing =
+extern "js" fn summarize_samples_ffi(samples : FixedArray[Double]) -> Timing =
   #| (samples) => {
   #|   const sorted = [...samples].sort((left, right) => left - right);
   #|   const percentile = (fraction) => {
@@ -112,6 +112,10 @@ extern "js" fn summarize_samples(samples : Array[Double]) -> Timing =
   #|   };
   #|   return { median_ms: percentile(0.5), p95_ms: percentile(0.95) };
   #| }
+
+fn summarize_samples(samples : Array[Double]) -> Timing {
+  summarize_samples_ffi(FixedArray::from_array(samples))
+}
 
 ///|
 extern "js" fn emit_report(
